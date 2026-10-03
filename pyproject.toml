@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "petwatch"
+version = "2.0.0"
+description = "Pet de desktop que reage ao estado do opencode"
+requires-python = ">=3.11"
+dependencies = ["PySide6>=6.5"]
+
+[project.scripts]
+petwatch = "petwatch.app:main"
+
+[tool.setuptools]
+packages = ["petwatch", "petwatch.ui"]
+
+[tool.setuptools.package-data]
+petwatch = []
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
