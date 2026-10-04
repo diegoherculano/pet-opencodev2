@@ -16,6 +16,7 @@ timeout e só então falha. Medido nesta máquina:
 from __future__ import annotations
 
 import http.client
+import json
 import logging
 import socket
 
@@ -101,6 +102,33 @@ class Connection:
         """Próxima linha do corpo; ``b""`` no fim do stream."""
 
         return self._require_open().readline()
+
+    def read(self) -> bytes:
+        """Corpo inteiro. Só faz sentido em respostas com tamanho
+        conhecido — o stream SSE é lido com :meth:`readline`."""
+
+        return self._require_open().read()
+
+    def read_json(self):
+        """Corpo já decodificado, ou ``None`` se não for JSON válido.
+
+        Consultas do opencode v2 (quais formulários e permissões estão
+        pendentes) respondem JSON pequeno e inteiro, então ler tudo é
+        certo e evita um parser de stream só para elas.
+        """
+
+        payload = self.read()
+
+        if not payload:
+            return None
+
+        try:
+            return json.loads(payload.decode("utf-8", errors="replace"))
+
+        except ValueError as exc:
+            log.debug("[pet] %s não devolveu JSON: %s", self._path, exc)
+
+            return None
 
     # ------------------------------------------------------------
     # Encerramento

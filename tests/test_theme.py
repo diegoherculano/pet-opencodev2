@@ -81,8 +81,6 @@ class ThemeSchemaTests(unittest.TestCase):
         self.assertTrue(theme.text_enabled)
         self.assertEqual(theme.text_position, "top")
         self.assertEqual(theme.font_family, "Inter")
-        self.assertEqual(theme.title_font_size, 13)
-        self.assertEqual(theme.subtitle_font_size, 12)
         self.assertEqual(theme.title_color, "#1F1F1F")
         self.assertEqual(theme.subtitle_color, "#9CA3AF")
         self.assertEqual(theme.background, "#FFFFFF")
@@ -111,8 +109,6 @@ class ThemeSchemaTests(unittest.TestCase):
                     "enabled": False,
                     "position": "bottom",
                     "font_family": "Fira Code",
-                    "title_font_size": 22,
-                    "subtitle_font_size": 18,
                     "title_color": "#ffffff",
                     "subtitle_color": "#cccccc",
                     "background": "#222222",
@@ -134,8 +130,6 @@ class ThemeSchemaTests(unittest.TestCase):
         self.assertFalse(theme.text_enabled)
         self.assertEqual(theme.text_position, "bottom")
         self.assertEqual(theme.font_family, "Fira Code")
-        self.assertEqual(theme.title_font_size, 22)
-        self.assertEqual(theme.subtitle_font_size, 18)
         self.assertEqual(theme.title_color, "#ffffff")
         self.assertEqual(theme.subtitle_color, "#cccccc")
         self.assertEqual(theme.background, "#222222")
@@ -148,16 +142,34 @@ class ThemeSchemaTests(unittest.TestCase):
         self.assertEqual(theme.corner_radius, 4)
         self.assertEqual(theme.line_gap, 6)
 
-    def test_partial_text_block_keeps_other_defaults(self):
+    def test_the_font_size_comes_from_the_preset_not_the_theme(self):
+        """A chave saiu do ``pet.json``, e um tema antigo não quebra por isso.
+
+        O tamanho da fonte do balão é do preset de tamanho, que já sabe a
+        escala; nenhum dos 1738 temas definia essas chaves.
+        """
+
         directory = make_theme_dir({
             "pet.json": json.dumps({"text": {"title_font_size": 30}}),
         })
 
         theme = PetTheme.from_directory(directory)
 
-        self.assertEqual(theme.title_font_size, 30)
-        self.assertEqual(theme.subtitle_font_size, 12)
-        self.assertEqual(theme.title_color, "#1F1F1F")
+        self.assertFalse(hasattr(theme, "title_font_size"))
+
+        from petwatch.sizes import get_size
+
+        self.assertEqual(get_size("medium").card_title_font, 11)
+
+    def test_partial_text_block_keeps_other_defaults(self):
+        directory = make_theme_dir({
+            "pet.json": json.dumps({"text": {"title_color": "#123456"}}),
+        })
+
+        theme = PetTheme.from_directory(directory)
+
+        self.assertEqual(theme.title_color, "#123456")
+        self.assertEqual(theme.subtitle_color, "#9CA3AF")
         self.assertTrue(theme.text_enabled)
 
 

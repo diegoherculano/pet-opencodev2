@@ -89,10 +89,13 @@ class SpriteSheet(FrameSource):
 
     Todas as spritesheets do repositório têm 1536x1872 pixels, ou seja,
     8 colunas x 9 linhas de 192x208 — 72 células. As células não formam
-    uma animação única: cada linha da grade é uma ação diferente e há
-    células vazias de preenchimento. Por isso a animação usa só a
-    primeira sequência de células com conteúdo, a menos que o tema
-    force um laço.
+    uma animação única: cada linha da grade é uma ação diferente (andar,
+    abaixar, escurecer…) e há células vazias de preenchimento, com o
+    padrão ``6, 8, 8, 4, 5, 8, 6, 6, 6`` de células usadas por linha.
+
+    Cada linha tem a própria animação, e :meth:`row_loop` diz quais
+    quadros dela têm conteúdo. Sem isso, animar tudo em sequência
+    saltaria entre ações sem relação.
     """
 
     def __init__(
@@ -108,6 +111,8 @@ class SpriteSheet(FrameSource):
         self._cell_width, self._cell_height = grid.cell_size(
             image.width(), image.height()
         )
+
+        self._row_cache: dict[int, tuple[int, int] | None] = {}
 
         self._loop = self._resolve_loop(loop)
 
@@ -144,6 +149,44 @@ class SpriteSheet(FrameSource):
     # ------------------------------------------------------------
     # Laço de animação
     # ------------------------------------------------------------
+
+    def row_loop(self, row: int) -> tuple[int, int] | None:
+        """Intervalo de quadros com conteúdo na linha ``row``.
+
+        Devolve ``None`` se a linha não existe ou está vazia. Varre só a
+        linha pedida, e memoiza: o layout é fixo, então perguntar de novo
+        não custa.
+        """
+
+        if row in self._row_cache:
+            return self._row_cache[row]
+
+        result = self._scan_row(row)
+
+        self._row_cache[row] = result
+
+        return result
+
+    def _scan_row(self, row: int) -> tuple[int, int] | None:
+        if row < 0 or row >= self._grid.rows:
+            return None
+
+        first: int | None = None
+        last: int | None = None
+
+        for column in range(self._grid.columns):
+            index = row * self._grid.columns + column
+
+            if has_content(self.frame(index)):
+                if first is None:
+                    first = index
+
+                last = index
+
+        if first is None or last is None:
+            return None
+
+        return first, last
 
     def _resolve_loop(self, loop: tuple[int, int] | None) -> tuple[int, int]:
         if loop is not None:

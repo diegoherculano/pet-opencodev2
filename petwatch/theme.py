@@ -14,7 +14,6 @@ Cada tema é um diretório em :data:`petwatch.config.PETS_DIR` contendo um
         "text": {
             "enabled": true,
             "position": "top",
-            "font_size": 15,
             "font_family": "DejaVu Sans Mono"
         }
     }
@@ -185,8 +184,10 @@ class PetTheme:
     #: em :data:`petwatch.ui.bubble.FONT_PREFERENCE`.
     font_family: str = "Inter"
 
-    title_font_size: int = 13
-    subtitle_font_size: int = 12
+    # O *tamanho* da fonte do balão não mora aqui: é do preset de tamanho
+    # (``sizes.PetSize.card_title_font``), que já sabe a escala. Nenhum dos
+    # 1738 temas define ``title_font_size``, então a chave saiu do
+    # ``pet.json`` em vez de ficar ali sem efeito.
 
     title_color: str = "#1F1F1F"
     subtitle_color: str = "#9CA3AF"
@@ -274,13 +275,6 @@ class PetTheme:
         theme.text_position = text.get("position", theme.text_position)
 
         theme.font_family = text.get("font_family", theme.font_family)
-
-        theme.title_font_size = int(
-            text.get("title_font_size", theme.title_font_size)
-        )
-        theme.subtitle_font_size = int(
-            text.get("subtitle_font_size", theme.subtitle_font_size)
-        )
 
         theme.title_color = text.get("title_color", theme.title_color)
         theme.subtitle_color = text.get("subtitle_color", theme.subtitle_color)

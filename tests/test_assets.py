@@ -264,7 +264,91 @@ class SpriteSheetTests(unittest.TestCase):
 
         self.assertEqual(sheet.loop_range, (0, 3))
 
-    def test_loop_detection_on_blank_sheet(self):
+    def test_row_loop_finds_the_used_cells(self):
+        # Linha 1 com as tres primeiras celulas, linha 2 com todas.
+        sheet = SpriteSheet(
+            solid_sheet(3, 3, filled_cells={0, 1, 2, 3, 4, 5, 6, 7, 8}),
+            SpriteGrid(3, 3),
+        )
+
+        self.assertEqual(sheet.row_loop(0), (0, 2))
+        self.assertEqual(sheet.row_loop(1), (3, 5))
+        self.assertEqual(sheet.row_loop(2), (6, 8))
+
+    def test_row_loop_of_an_empty_row(self):
+        sheet = SpriteSheet(
+            solid_sheet(3, 3, filled_cells={0, 1, 2, 3, 4, 5}),
+            SpriteGrid(3, 3),
+        )
+
+        self.assertIsNone(sheet.row_loop(2))
+
+    def test_row_loop_skips_gaps_inside_the_row(self):
+        # Celulas 0 e 3 da linha 0; 1 e 2 vazias no meio.
+        sheet = SpriteSheet(
+            solid_sheet(4, 1, filled_cells={0, 3}),
+            SpriteGrid(4, 1),
+        )
+
+        self.assertEqual(sheet.row_loop(0), (0, 3))
+
+    def test_row_loop_out_of_range(self):
+        sheet = SpriteSheet(solid_sheet(2, 2), SpriteGrid(2, 2))
+
+        self.assertIsNone(sheet.row_loop(9))
+        self.assertIsNone(sheet.row_loop(-1))
+
+    def test_row_loop_is_memoized(self):
+        sheet = SpriteSheet(solid_sheet(4, 1), SpriteGrid(4, 1))
+
+        self.assertEqual(sheet.row_loop(0), (0, 3))
+        self.assertIn(0, sheet._row_cache)
+
+        # Segunda chamada vem do cache, com o mesmo resultado.
+        self.assertEqual(sheet.row_loop(0), (0, 3))
+
+    def test_repository_rows_match_the_documented_layout(self):
+        """O padrao ``6, 8, 8, 4, 5, 8, 6, 6, 6`` vale para o eevee."""
+
+        from petwatch.theme import load_theme
+
+        theme = load_theme("eevee")
+
+        image = QImage(str(theme.asset_path))
+
+        if image.isNull():
+            self.skipTest("sem WebP neste Qt")
+
+        sheet = SpriteSheet(image, theme.grid)
+
+        counts = []
+        for row in range(theme.grid.rows):
+            loop = sheet.row_loop(row)
+
+            counts.append(0 if loop is None else loop[1] - loop[0] + 1)
+
+        self.assertEqual(counts, [6, 8, 8, 4, 5, 8, 6, 6, 6])
+
+    def test_action_rows_of_the_repository_are_not_empty(self):
+        """Nenhum estado pode cair numa linha vazia."""
+
+        from petwatch.config import ACTION_ROW_BY_STATE
+        from petwatch.theme import load_theme
+
+        theme = load_theme("eevee")
+
+        image = QImage(str(theme.asset_path))
+
+        if image.isNull():
+            self.skipTest("sem WebP neste Qt")
+
+        sheet = SpriteSheet(image, theme.grid)
+
+        for state, row in ACTION_ROW_BY_STATE.items():
+            with self.subTest(state=state):
+                self.assertIsNotNone(sheet.row_loop(row))
+
+    def test_row_loop_detection_on_blank_sheet(self):
         sheet = SpriteSheet(
             solid_sheet(2, 2, filled_cells=set()),
             SpriteGrid(2, 2),
