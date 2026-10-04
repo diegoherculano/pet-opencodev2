@@ -1,0 +1,24 @@
+name: Feature request
+description: Sugira uma ideia para o pet
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problema
+    attributes:
+      label: Problema
+      description: Que dor essa ideia resolve?
+      placeholder: Não consigo saber qual aba está esperando resposta…
+    validations:
+      required: true
+  - type: textarea
+    id: proposta
+    attributes:
+      label: Proposta
+      description: O que deveria acontecer?
+    validations:
+      required: true
+  - type: textarea
+    id: alternativas
+    attributes:
+      label: Alternativas consideradas
+      description: Outros jeitos de resolver (e por que não servem)
