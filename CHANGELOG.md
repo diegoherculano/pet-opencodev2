@@ -6,6 +6,12 @@ Todas as mudanças notáveis deste projeto são documentadas aqui, no formato
 
 ## [Unreleased]
 
+### Alterado
+
+- README enxutado no padrão de grandes projetos (visão geral + links);
+  detalhes movidos para `docs/` (`OPERATION`, `ARCHITECTURE`, `TESTING`,
+  `BUGS`). URLs do projeto declaradas no `pyproject`.
+
 ## [2.0.0] - 2026-10-03
 
 ### Adicionado

@@ -28,6 +28,12 @@ dependencies = ["PySide6>=6.5"]
 [project.optional-dependencies]
 dev = ["ruff>=0.4"]
 
+[project.urls]
+Homepage = "https://github.com/diegoherculano/pet-opencodev2"
+Repository = "https://github.com/diegoherculano/pet-opencodev2"
+Issues = "https://github.com/diegoherculano/pet-opencodev2/issues"
+Changelog = "https://github.com/diegoherculano/pet-opencodev2/blob/master/CHANGELOG.md"
+
 [project.scripts]
 petwatch = "petwatch.app:main"
 
