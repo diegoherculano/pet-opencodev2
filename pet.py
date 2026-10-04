@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Ponto de entrada do pet.
 
-A implementação vive no pacote ``petwatch``:
+Por padrão o processo vai para segundo plano e o terminal volta na hora;
+``--foreground`` roda colado, e ``--stop``/``--status`` cuidam do processo
+que já está de pé. A implementação vive no pacote ``petwatch``:
 
 - ``petwatch.config``      — constantes e caminhos
+- ``petwatch.daemon``      — saída do terminal, log e instância única
 - ``petwatch.states``      — estados e rótulos
 - ``petwatch.theme``       — leitura do ``pet.json``
 - ``petwatch.assets``      — escolha do asset decodificável e fatiamento
