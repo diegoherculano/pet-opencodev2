@@ -31,8 +31,17 @@ pip install -e .
 ```
 
 O repo já traz o tema padrão (`pets/eevee`), então um clone fresco abre o
-pet sem mais nada. O pacote completo (1738 temas) é opcional: basta copiar
-para `pets/` seguindo o mesmo layout — um diretório por tema, com `pet.json`.
+pet sem mais nada. O pacote completo (1738 temas) é opcional e vem de
+[codex-pokepets](https://github.com/dnnyngyen/codex-pokepets) — mesmo layout
+(um diretório por tema, com `pet.json`):
+
+```bash
+git clone --depth 1 https://github.com/dnnyngyen/codex-pokepets /tmp/pokepets
+cp -r /tmp/pokepets/pets/* pets/
+```
+
+Sprites de terceiros: © Nintendo / Game Freak / Creatures Inc., uso de fã
+sem fins comerciais (ver a licença do repo de origem).
 
 Sem instalar também funciona, direto da fonte:
 

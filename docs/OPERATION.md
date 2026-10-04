@@ -69,7 +69,8 @@ $ python pet.py
 
 O seletor lista os **nomes das pastas** em `pets/`, sem ler nenhum
 `pet.json`: quem decide quantos pets existem é o usuário, então a pasta é a
-fonte da verdade. Com o pacote completo são 1738 pastas, 10 por página.
+fonte da verdade. Com o pacote completo ([codex-pokepets](https://github.com/dnnyngyen/codex-pokepets),
+mesmo layout) são 1738 pastas, 10 por página.
 
 A troca só acontece num clique explícito. Digitar na busca, mudar de página
 e filtrar não trocam o pet — do contrário, digitar "pi" já trocaria o pet
