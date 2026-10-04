@@ -15,7 +15,7 @@ um balão por sessão em ação.
 - Um balão por sessão do opencode em ação, com o nome da sessão
 - "Aguardando resposta" verificado no servidor — nunca chutado do stream
 - Roda em segundo plano: o prompt volta na hora, `--status` / `--stop`
-- 1738 temas, seletor com busca, 3 tamanhos, sempre no topo, ícone na bandeja
+- Eevee incluso; pacote opcional com 1738 temas, seletor com busca, 3 tamanhos, sempre no topo, ícone na bandeja
 - Só lê: nenhum `POST`/`DELETE`, então não responde nem interrompe nada
 
 ## Requisitos
@@ -29,6 +29,10 @@ um balão por sessão em ação.
 ```bash
 pip install -e .
 ```
+
+O repo já traz o tema padrão (`pets/eevee`), então um clone fresco abre o
+pet sem mais nada. O pacote completo (1738 temas) é opcional: basta copiar
+para `pets/` seguindo o mesmo layout — um diretório por tema, com `pet.json`.
 
 Sem instalar também funciona, direto da fonte:
 

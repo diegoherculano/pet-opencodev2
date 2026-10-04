@@ -44,7 +44,7 @@ O projeto usa `ruff` com `line-length = 88` (ver `pyproject.toml`).
 3. Descreva o sintoma, a causa e como verificou (comando + saída).
 4. Atualize o `README.md` se o comportamento visível mudar e adicione uma
    entrada em `CHANGELOG.md` sob `Unreleased`.
-5. Não commite `pets/` (62 MB de dados, ignorado via `.gitignore`), logs,
+5. Não commite o pacote completo de pets (só `pets/eevee` é versionado), logs,
    nem `prefs.json` real.
 
 ## Commits

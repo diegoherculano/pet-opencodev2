@@ -29,6 +29,8 @@ htmlcov/
 *.swp
 .DS_Store
 
-# Assets dos pets: 1738 temas, 62 MB de binarios de terceiros.
-# Sao dados, nao fonte. Ver README.md.
-pets/
+# Assets dos pets: o pacote completo tem 1738 temas (~62 MB de binários
+# de terceiros) e não é versionado. Só o Eevee (tema padrão) vem no repo,
+# para um clone fresco abrir o pet sem mais nada.
+pets/*
+!pets/eevee/
