@@ -37,6 +37,12 @@ detalhes que valem fora do código:
   a pintura sem mudar as medidas do balão.
 - `tests/test_menu.py` percorre o menu de tamanho fechando o ciclo em todos
   os presets, a partir dos três pontos de partida.
+- `tests/test_menu.py::ThumbnailTests` rasteriza o delegate da grade e conta
+  os pixels pintados: é o que pega um seletor que voltou a mostrar só o nome
+  (a área fica quase toda branca), um que volta a cortar a página e um que
+  troca as faixas — nome em cima da figura em vez de embaixo. Os nomes
+  fictícios do fixture comum não servem ali, então essa classe usa pets de
+  verdade do repositório.
 - `tests/test_daemon.py::DetachTests` roda o desvio num **processo
   separado** — `fork` dentro do runner trocaria os descritores da própria
   suíte. Confere que o comando volta com 0, que a saída do processo vai

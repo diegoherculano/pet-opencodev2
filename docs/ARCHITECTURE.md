@@ -53,7 +53,7 @@ do sprite, e o **aviso colorido** é só do balão que espera resposta.
 | `prefs.py` | Preferências persistidas |
 | `ui/attention.py` | Pulso de "precisa de você" no estado de espera |
 | `ui/menu.py` | Menu do botão direito |
-| `ui/pet_picker.py` | Seletor de pet com busca e paginação |
+| `ui/pet_picker.py` | Seletor de pet em grade de miniaturas, com busca e paginação |
 | `monitor.py` | Loop de conexão e reconexão (roda em `QThread`) |
 | `ui/bubble.py` | Medição, empilhamento e pintura dos balões |
 | `ui/pet_widget.py` | Janela, sprite, arrasto |

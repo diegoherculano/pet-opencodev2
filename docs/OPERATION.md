@@ -63,14 +63,23 @@ $ python pet.py
 | Item | O que faz |
 | --- | --- |
 | **Tamanho** | Pequeno, Médio, Grande. A fonte do balão escala junto |
-| **Selecionar pet…** | Janela com busca e paginação; a troca é em tempo real |
+| **Selecionar pet…** | Grade de miniaturas com busca e paginação; a troca é em tempo real |
 | **Sempre no topo** | Marca/desmarca; lembra entre sessões |
 | **Fechar** | Sai do aplicativo |
 
-O seletor lista os **nomes das pastas** em `pets/`, sem ler nenhum
-`pet.json`: quem decide quantos pets existem é o usuário, então a pasta é a
-fonte da verdade. Com o pacote completo ([codex-pokepets](https://github.com/dnnyngyen/codex-pokepets),
-mesmo layout) são 1738 pastas, 10 por página.
+O seletor mostra a **miniatura** de cada tema: o `preview.gif` do diretório, ou
+qualquer outra imagem que o Qt consiga abrir, com o nome da pasta embaixo. O
+nome sozinho não diz nada sobre o bicho, e a figura sozinha não dá para
+procurar. O nome continua filtrando a busca e é o que o clique emite; na tela
+ele volta sob a figura, na barra de status (sob o cursor ou na seleção) e na
+dica do item — este último porque nome longo vira reticências na célula.
+
+A lista vem dos **nomes das pastas** em `pets/`, sem ler nenhum `pet.json`:
+quem decide quantos pets existem é o usuário, então a pasta é a fonte da
+verdade. Com o pacote completo ([codex-pokepets](https://github.com/dnnyngyen/codex-pokepets),
+mesmo layout) são 1738 pastas, 10 por página, em 5 colunas. Só a página
+visível é decodificada, e cada miniatura fica em cache enquanto o diálogo
+estiver aberto.
 
 A troca só acontece num clique explícito. Digitar na busca, mudar de página
 e filtrar não trocam o pet — do contrário, digitar "pi" já trocaria o pet

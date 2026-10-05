@@ -8,6 +8,12 @@ Todas as mudanças notáveis deste projeto são documentadas aqui, no formato
 
 ### Alterado
 
+- Seletor de pet mostra a **miniatura** de cada tema (`preview.gif` do
+  diretório, ou qualquer outra imagem que o Qt consiga abrir) com o nome
+  da pasta embaixo, em vez do nome sozinho. O nome continua filtrando a
+  busca e sendo o que o clique emite; na tela ele aparece sob a figura, na
+  barra de status (sob o cursor ou na seleção) e na dica do item, porque
+  nome longo vira reticências na célula.
 - README enxutado no padrão de grandes projetos (visão geral + links);
   detalhes movidos para `docs/` (`OPERATION`, `ARCHITECTURE`, `TESTING`,
   `BUGS`). URLs do projeto declaradas no `pyproject`.

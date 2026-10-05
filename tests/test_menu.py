@@ -12,15 +12,33 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtGui import QGuiApplication  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtCore import QPoint, QRect, Qt  # noqa: E402
+from PySide6.QtGui import QGuiApplication, QImage, QPainter, QPixmap  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QListWidgetItem,
+    QStyle,
+    QStyleOptionViewItem,
+)
 
-_app = QApplication.instance() or QApplication([])
+app = QApplication.instance() or QApplication([])
 
 from petwatch.sizes import PET_SIZES, SIZE_ORDER  # noqa: E402
+from petwatch.theme import list_themes  # noqa: E402
+from petwatch.ui import pet_picker  # noqa: E402
 from petwatch.ui.menu import MenuHandlers, PetMenu  # noqa: E402
-from petwatch.ui.pet_picker import PAGE_SIZE, PetPicker  # noqa: E402
+from petwatch.ui.pet_picker import (  # noqa: E402
+    CAPTION_GAP,
+    CELL_PADDING,
+    PAGE_SIZE,
+    PLACEHOLDER_ROLE,
+    THUMB_SIZE,
+    PetPicker,
+    cell_size,
+    page_height,
+    page_width,
+    thumbnail,
+)
 
 
 class Fixture(unittest.TestCase):
@@ -134,6 +152,413 @@ class ListTests(Fixture):
 
         self.picker._go(99)
         self.assertTrue(self.picker.next_button.isEnabled())
+
+
+class ThumbnailFixture(Fixture):
+    """Mesma coisa que :class:`Fixture`, mas com pets de verdade.
+
+    A miniatura vem do disco, então um nome fictício (``pet000``) não
+    produz imagem nenhuma e os testes de figura não teriam o que ver.
+    """
+
+    def setUp(self):
+        super().setUp()
+
+        real = list_themes()[:PAGE_SIZE]
+
+        self.assertTrue(real, "o repositório precisa de pets para o teste")
+
+        self.picker._all = list(real)
+        self.picker._filtered = list(real)
+        self.picker._page = 0
+        self.picker._thumbs.clear()
+
+        self.picker._refresh()
+
+    def render(self, item: QListWidgetItem) -> QImage:
+        """Rasteriza o delegate do item como a tela faria."""
+
+        index = self.picker.list.indexFromItem(item)
+
+        option = QStyleOptionViewItem()
+        option.initFrom(self.picker.list)
+
+        # O retângulo real vem em coordenadas da viewport, que para as
+        # linhas abaixo da primeira cai fora do canvas; só o tamanho
+        # importa para a pintura.
+        option.rect = QRect(
+            QPoint(0, 0),
+            self.picker.list.visualItemRect(item).size(),
+        )
+
+        option.state |= QStyle.State_Enabled
+
+        canvas = QImage(option.rect.size(), QImage.Format_ARGB32)
+
+        canvas.fill(Qt.white)
+
+        painter = QPainter(canvas)
+
+        self.picker.list.itemDelegate().paint(painter, option, index)
+
+        painter.end()
+
+        return canvas
+
+    def painted_ratio(self, image: QImage) -> float:
+        """Fração do quadro com algo diferente do branco de fundo.
+
+        Amostragem em passo 2: uma figura pequena já passa folgado, e o
+        teste fica rápido mesmo com o quadro inteiro.
+        """
+
+        samples = 0
+        painted = 0
+
+        for y in range(0, image.height(), 2):
+            for x in range(0, image.width(), 2):
+                samples += 1
+
+                if image.pixelColor(x, y).name() != "#ffffff":
+                    painted += 1
+
+        return painted / max(1, samples)
+
+    def caption_height(self) -> int:
+        """Altura da faixa do nome, com a fonte em uso."""
+
+        return self.picker.list.fontMetrics().height()
+
+    def caption_painted(self, item: QListWidgetItem) -> bool:
+        """Diz se a faixa do nome embaixo da figura foi pintada."""
+
+        canvas = self.render(item)
+
+        top = canvas.height() - CELL_PADDING - self.caption_height()
+
+        band = canvas.copy(
+            QRect(0, max(0, top), canvas.width(), self.caption_height())
+        )
+
+        return self.painted_ratio(band) > 0.05
+
+    def name_cell(self, name: str) -> QListWidgetItem:
+        """Item de ``name`` na página atual, pelo texto."""
+
+        for row in range(self.picker.list.count()):
+            item = self.picker.list.item(row)
+
+            if item.text() == name:
+                return item
+
+        self.fail(f"{name} não está na página")
+
+
+class CellTests(unittest.TestCase):
+    """A geometria da célula: figura em cima, nome embaixo."""
+
+    def test_the_cell_leaves_room_for_the_name(self):
+        """A altura da célula cobre figura + folga + nome."""
+
+        caption = 20
+
+        cell = cell_size(caption)
+
+        self.assertEqual(cell.width(), THUMB_SIZE + CELL_PADDING * 2)
+
+        self.assertEqual(
+            cell.height(),
+            THUMB_SIZE + CAPTION_GAP + caption + CELL_PADDING * 2,
+        )
+
+    def test_a_taller_font_makes_a_taller_cell(self):
+        """O nome é o que define a altura; a fonte é o que a mede."""
+
+        self.assertGreater(cell_size(30).height(), cell_size(14).height())
+
+    def test_the_page_size_leaves_no_scrollbar(self):
+        """A janela inicial é larga e alta o bastante para a página."""
+
+        cell = cell_size(14)
+
+        # 5 colunas de ``GRID_COLUMNS`` e 2 linhas de ``GRID_ROWS``, mais a
+        # moldura do diálogo.
+        self.assertGreater(
+            page_width(cell.width()),
+            cell.width() * 5,
+        )
+
+        self.assertGreater(
+            page_height(cell.height()),
+            cell.height() * 2,
+        )
+
+
+class ThumbnailTests(ThumbnailFixture):
+    """A lista mostra a figura do pet, não o nome da pasta."""
+
+    def test_items_carry_a_thumbnail(self):
+        """O item da página carrega um pixmap, não só o nome."""
+
+        for row in range(self.picker.list.count()):
+            with self.subTest(name=self.picker.list.item(row).text()):
+                self.assertIsInstance(
+                    self.picker.list.item(row).data(Qt.DecorationRole),
+                    QPixmap,
+                )
+
+    def test_name_still_lives_in_the_item(self):
+        """A busca e o clique dependem do texto; a figura é que entra."""
+
+        item = self.picker.list.item(0)
+
+        self.assertEqual(item.text(), self.picker._all[0])
+        self.assertIsInstance(item.data(Qt.DecorationRole), QPixmap)
+
+    def test_tooltip_carries_the_name(self):
+        """O balão do cursor nomeia a figura."""
+
+        self.assertEqual(self.picker.list.item(0).toolTip(), self.picker._all[0])
+
+    def test_delegate_draws_the_pixmap(self):
+        """A miniatura ocupa a grade; um nome miúdo não ocuparia."""
+
+        rendered = self.render(self.picker.list.item(0))
+
+        # O delegate deixa respiro nas bordas e uma faixa para o nome,
+        # então a área útil é menor que o quadro; 15% é folgado para
+        # figura e impossível para texto miúdo.
+        self.assertGreater(self.painted_ratio(rendered), 0.15)
+
+    def test_the_name_is_painted_below_the_pixmap(self):
+        """O nome volta para a tela, embaixo da figura."""
+
+        for row in range(self.picker.list.count()):
+            with self.subTest(name=self.picker.list.item(row).text()):
+                self.assertTrue(self.caption_painted(self.picker.list.item(row)))
+
+    def test_the_caption_is_below_the_pixmap(self):
+        """Regressão: nome acima da figura troca as duas faixas."""
+
+        item = self.picker.list.item(0)
+
+        canvas = self.render(item)
+
+        height = canvas.height()
+
+        figure_bottom = height - (
+            CAPTION_GAP + self.caption_height() + CELL_PADDING
+        )
+
+        figure = canvas.copy(QRect(0, 0, canvas.width(), figure_bottom))
+
+        caption = canvas.copy(
+            QRect(0, figure_bottom, canvas.width(), height - figure_bottom)
+        )
+
+        # Figura pintada em cima, nome embaixo: a faixa de baixo é a mais
+        # esparsa das duas.
+        self.assertGreater(self.painted_ratio(figure), 0.10)
+        self.assertLess(self.painted_ratio(caption), 0.5)
+
+    def test_a_long_name_is_elided_not_cut(self):
+        """Nome que não cabe vira reticências, não metade da palavra."""
+
+        long_name = "a" * 80
+
+        self.picker._all = [long_name, self.picker._all[0]]
+        self.picker._filtered = list(self.picker._all)
+
+        self.picker._refresh()
+
+        item = self.name_cell(long_name)
+
+        self.assertTrue(self.caption_painted(item))
+        self.assertEqual(item.toolTip(), long_name)
+
+    def test_every_repository_pet_has_a_thumbnail(self):
+        """Nenhum tema do repositório fica sem figura."""
+
+        for name in list_themes()[:25]:
+            with self.subTest(name=name):
+                self.assertFalse(thumbnail(name).isNull())
+
+    def test_the_thumbnail_is_square_bounded(self):
+        """A miniatura cabe na grade, sem esticar a figura."""
+
+        pixmap = thumbnail(self.picker._all[0], size=48)
+
+        self.assertLessEqual(max(pixmap.width(), pixmap.height()), 48)
+        self.assertGreater(min(pixmap.width(), pixmap.height()), 0)
+
+    def test_unknown_pet_has_no_thumbnail(self):
+        """Nome sem pasta devolve pixmap vazio, não estoura."""
+
+        self.assertTrue(thumbnail("nao-existe-mesmo").isNull())
+
+    def test_thumbnails_are_memoized(self):
+        """Voltar a uma página não decodifica a imagem de novo."""
+
+        calls: list[str] = []
+
+        real = pet_picker.thumbnail
+
+        def counting(name, *args, **kwargs):
+            calls.append(name)
+
+            return real(name, *args, **kwargs)
+
+        pet_picker.thumbnail = counting
+
+        self.addCleanup(setattr, pet_picker, "thumbnail", real)
+
+        self.picker._thumbs.clear()
+
+        for _ in range(3):
+            self.picker._page = 0
+            self.picker._refresh()
+
+        # Uma decodificação por pet da página, mesmo com três passagens.
+        self.assertEqual(len(calls), self.picker.list.count())
+
+    def test_paging_back_reuses_the_cache(self):
+        """A miniatura da página 0 não é refeita ao voltar."""
+
+        self.picker._go(1)
+        self.picker._go(-1)
+
+        self.assertEqual(len(self.picker._thumbs), self.picker.list.count())
+
+    def test_a_pet_without_a_figure_still_lists(self):
+        """Diretório sem imagem não some da lista."""
+
+        self.picker._all = ["nao-existe-mesmo"]
+        self.picker._filtered = ["nao-existe-mesmo"]
+
+        self.picker._refresh()
+
+        self.assertEqual(self.rows(), ["nao-existe-mesmo"])
+        self.assertIsNone(self.picker.list.item(0).data(Qt.DecorationRole))
+
+    def test_a_page_fits_without_scrolling(self):
+        """Regressão: a janela inicial cortava a última linha da página."""
+
+        self.picker.resize(
+            page_width(self.picker._cell.width()),
+            page_height(self.picker._cell.height()),
+        )
+
+        app.processEvents()
+
+        scrollbars = (
+            self.picker.list.horizontalScrollBar(),
+            self.picker.list.verticalScrollBar(),
+        )
+
+        for bar in scrollbars:
+            with self.subTest(bar=bar.orientation()):
+                self.assertEqual(bar.maximum(), 0)
+
+    def test_the_message_spans_the_grid(self):
+        """A linha de "nenhum pet encontrado" não fica numa célula."""
+
+        self.picker.show()
+
+        self.picker.search.setText("naoexiste")
+
+        app.processEvents()
+
+        item = self.picker.list.item(0)
+
+        self.assertTrue(item.data(PLACEHOLDER_ROLE))
+        self.assertGreater(
+            item.sizeHint().width(),
+            self.picker._cell.width(),
+        )
+
+    def test_the_message_follows_the_window(self):
+        """Redimensionar a janela reestica a mensagem."""
+
+        self.picker.show()
+
+        self.picker.search.setText("naoexiste")
+
+        app.processEvents()
+
+        before = self.picker.list.item(0).sizeHint().width()
+
+        self.picker.resize(self.picker.width() + 120, self.picker.height())
+
+        app.processEvents()
+
+        self.assertGreater(
+            self.picker.list.item(0).sizeHint().width(),
+            before,
+        )
+
+
+class StatusTests(Fixture):
+    """O nome da pasta aparece na barra de status."""
+
+    def test_names_the_selection(self):
+        self.picker.search.setText("")
+        self.picker._refresh()
+
+        self.picker.list.setCurrentRow(1)
+
+        self.assertEqual(self.picker.status.text(), "pet001")
+
+    def test_names_the_hovered_pet(self):
+        """Como o nome não é pintado, ele acompanha o cursor."""
+
+        self.picker.search.setText("")
+        self.picker._refresh()
+
+        rect = self.picker.list.visualItemRect(self.picker.list.item(2))
+
+        self.picker._on_hovered(rect.center())
+
+        self.assertEqual(self.picker.status.text(), "pet002")
+
+    def test_hovering_the_gap_keeps_the_selection_name(self):
+        """Passar pelo vão entre figuras não apaga o nome da seleção."""
+
+        self.picker.search.setText("")
+        self.picker.list.setCurrentRow(1)
+        self.picker._refresh()
+
+        self.picker.list.setCurrentRow(1)
+
+        self.picker._on_hovered(QPoint(-1, -1))
+
+        self.assertEqual(self.picker.status.text(), "pet001")
+
+    def test_cleared_when_leaving_the_grid(self):
+        """Sem seleção, sair da grade limpa o nome."""
+
+        self.picker.search.setText("")
+        self.picker._refresh()
+
+        self.picker.list.setCurrentRow(-1)
+        self.picker._on_hovered(QPoint(-1, -1))
+
+        self.assertEqual(self.picker.status.text(), "")
+
+    def test_cleared_after_a_refresh(self):
+        """O nome da página anterior não fica pendurado."""
+
+        self.picker.search.setText("")
+        self.picker.list.setCurrentRow(1)
+        self.picker._refresh()
+
+        self.assertEqual(self.picker.status.text(), "")
+
+    def test_no_match_message_is_not_named(self):
+        """A linha de aviso não é um pet, então não ganha nome."""
+
+        self.picker.search.setText("naoexiste")
+
+        self.assertEqual(self.picker.status.text(), "")
 
 
 class SearchTests(Fixture):
