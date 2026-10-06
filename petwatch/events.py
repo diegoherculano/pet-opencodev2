@@ -69,6 +69,9 @@ WORKING_EVENTS = frozenset({
     # Shell e processos
     "session.shell.started",
     "shell.created",
+    # `shell.output` não é evento nesta versão — é a rota
+    # `GET /api/shell/:id/output`. Fica aqui porque versões anteriores o
+    # emitiam, e um nome a mais só não casa com nada.
     "shell.output",
     "shell.exited",
     # Edição de arquivos
@@ -144,6 +147,9 @@ STATUS_KEYS = ("status", "state")
 
 #: Campos que podem conter o ``sessionID``, em ordem de preferência.
 SESSION_KEYS = ("sessionID", "sessionId", "session_id")
+
+#: Campo do envelope que carrega o *location* do evento.
+LOCATION_KEYS = ("location",)
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,6 +343,50 @@ def extract_session_id(data: Any) -> str | None:
             return found
 
     return _first_string(data, SESSION_KEYS)
+
+
+def extract_location_directory(data: Any) -> str | None:
+    """Diretório do *location* a que o evento pertence.
+
+    O *sessionID* é o dono preciso, mas **não vem em todo evento**. Os
+    eventos de arquivo e de shell — ``file.edited``, ``shell.created``,
+    ``shell.exited`` — são do *location*, não da sessão, e o schema do
+    opencode confirma: o payload é ``{info}`` e ``{id, exit, status}``,
+    sem nenhum ``sessionID``. Conferido no stream de verdade:
+
+    ```
+    {"id": "evt_…", "created": 1791303395409, "type": "shell.created",
+     "location": {"directory": "/tmp/opencode"},
+     "data": {"info": {"id": "sh_…", "command": "sleep 1", …}}}   # sem sessionID
+    ```
+
+    O envelope traz o ``location``, então o evento volta a ter dono por
+    **projeto** — a mesma unidade que ``GET /api/session/{id}`` devolve em
+    ``info.location.directory``. É o que permite contar esses eventos como
+    prova de vida da instância (ver ``SessionBoard.note_alive``) em vez de
+    descartá-los.
+
+    Quando duas instâncias do mesmo projeto dividem a atribuição, as duas
+    contam como vivas. Isso é deliberado: o evento não diz qual delas
+    escreveu o arquivo, e errar para "Thinking" é melhor do que errar para
+    "Ready" no meio do trabalho.
+    """
+
+    if not isinstance(data, Mapping):
+        return None
+
+    for key in LOCATION_KEYS:
+        nested = _nested(data, key)
+
+        if nested is None:
+            continue
+
+        found = _first_string(nested, ("directory",))
+
+        if found and found.strip():
+            return found
+
+    return None
 
 
 def is_ask_event(event_name: str | None, data: Any) -> bool:

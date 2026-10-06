@@ -21,7 +21,9 @@ from petwatch.http import HttpError
 from petwatch.pending import (
     KIND_FORM,
     KIND_PERMISSION,
+    LocationNotFound,
     active_sessions,
+    is_location_not_found,
     known_projects,
     location_query,
     pending_asks,
@@ -75,6 +77,29 @@ def fake_get(responses):
         raise AssertionError(f"rota inesperada: {path}")
 
     return _get, calls
+
+
+class LocationNotFoundTagTests(unittest.TestCase):
+    """O corpo do 404 é o que separa *location* morta de rota ausente.
+
+    As duas coisas chegam com o mesmo status, e a diferença entre elas é
+    "o pet continua avisando" e "o pet desliga o recurso" — ver
+    :class:`Bug20LocationTests`.
+    """
+
+    def test_the_tag_is_recognized(self):
+        body = {"_tag": "LocationNotFoundError", "location": {"directory": "/p"}}
+
+        self.assertTrue(is_location_not_found(body))
+
+    def test_an_empty_body_is_a_missing_route(self):
+        self.assertFalse(is_location_not_found(None))
+
+    def test_another_error_tag_is_a_missing_route(self):
+        self.assertFalse(is_location_not_found({"_tag": "NotFoundError"}))
+
+    def test_a_body_without_a_tag_is_a_missing_route(self):
+        self.assertFalse(is_location_not_found({"error": "not found"}))
 
 
 class LocationQueryTests(unittest.TestCase):
@@ -173,6 +198,120 @@ class PendingAsksTests(unittest.TestCase):
             self.assertEqual(pending_asks(PORT, "s", []), [])
 
         self.assertEqual(calls, [])
+
+    def test_a_missing_location_is_not_a_missing_route(self):
+        """O 404 de *location* morta não é degradação.
+
+        O opencode responde as duas coisas com 404 e o que as separa é o
+        ``_tag`` do corpo. Ler o status sozinho desligava o "aguardando"
+        inteiro por causa de um diretório que não existe mais — o bug 20.
+        """
+
+        body = {
+            "_tag": "LocationNotFoundError",
+            "location": {"directory": "/projetos/dd"},
+            "message": "Location not found: /projetos/dd",
+        }
+
+        get, _ = fake_get([("/api/form", 404, body)])
+
+        with mock.patch.object(pending, "get_json", get):
+            with self.assertRaises(LocationNotFound):
+                pending_forms(PORT, "s", "/projetos/dd")
+
+    def test_the_permission_route_tells_the_two_aparts_too(self):
+        body = {"_tag": "LocationNotFoundError"}
+
+        get, _ = fake_get([("/api/permission/request", 404, body)])
+
+        with mock.patch.object(pending, "get_json", get):
+            with self.assertRaises(LocationNotFound):
+                pending_permissions(PORT, "s", "/projetos/dd")
+
+    def test_a_dead_location_does_not_turn_the_feature_off(self):
+        """Um projeto apagado não pode calar o pet inteiro.
+
+        Reproduzido no servidor v2 de verdade: ``/api/project`` guarda
+        diretórios que já não têm pasta, e eles respondem 404. Com o 404
+        lido como "rota ausente", o recurso inteiro desligava e o pet
+        voltava a depender do stream — o que produz "Thinking" com a
+        pergunta aberta na tela.
+        """
+
+        def _get(_port, _password, path, *, timeout=pending.PENDING_TIMEOUT):
+            if "morto" in path:
+                return 404, {"_tag": "LocationNotFoundError"}
+
+            if path.startswith("/api/form"):
+                return 200, FORM_BODY
+
+            return 200, {"data": []}
+
+        missing: set[str] = set()
+
+        with mock.patch.object(pending, "get_json", _get):
+            asks = pending_asks(PORT, "s", ["/projetos/morto", "/projetos/dd"],
+                                missing=missing)
+
+        # Degradação desliga o recurso e devolve ``None``.
+        self.assertIsNotNone(asks)
+        self.assertEqual([a.id for a in asks], ["frm_1"])
+        self.assertEqual(missing, {"/projetos/morto"})
+
+    def test_a_location_that_came_back_is_asked_again(self):
+        """``missing`` é preenchido no caminho, não é um filtro de entrada."""
+
+        def _get(_port, _password, path, *, timeout=pending.PENDING_TIMEOUT):
+            if "morto" in path:
+                return 200, {"data": []}
+
+            if path.startswith("/api/form"):
+                return 200, {"data": []}
+
+            return 200, {"data": []}
+
+        missing: set[str] = set()
+
+        with mock.patch.object(pending, "get_json", _get):
+            pending_asks(PORT, "s", ["/projetos/morto"], missing=missing)
+
+        self.assertEqual(missing, set())
+
+    def test_only_missing_locations_mean_nothing_is_pending(self):
+        """Não sobrou nenhum *location* vivo, e nenhum falhou.
+
+        Um diretório que não existe não tem nada pendente, então a lista
+        vazia é a resposta certa — e não um erro, nem uma degradação.
+        """
+
+        def _get(_port, _password, path, *, timeout=pending.PENDING_TIMEOUT):
+            return 404, {"_tag": "LocationNotFoundError"}
+
+        with mock.patch.object(pending, "get_json", _get):
+            asks = pending_asks(PORT, "s", ["/a", "/b"])
+
+        self.assertEqual(asks, [])
+
+    def test_a_missing_location_alongside_a_failure_is_an_error(self):
+        """Aí já não deu para saber de ninguém, e erro mantém o estado."""
+
+        def _get(_port, _password, path, *, timeout=pending.PENDING_TIMEOUT):
+            if "sumiu" in path:
+                return 404, {"_tag": "LocationNotFoundError"}
+
+            return 500, None
+
+        with mock.patch.object(pending, "get_json", _get):
+            with self.assertRaises(HttpError):
+                pending_asks(PORT, "s", ["/projetos/sumiu", "/quebrou"])
+
+    def test_the_tag_is_what_separates_them(self):
+        """Um 404 com corpo de JSON qualquer continua sendo rota ausente."""
+
+        get, _ = fake_get([("/api/form", 404, {"error": "not found"})])
+
+        with mock.patch.object(pending, "get_json", get):
+            self.assertIsNone(pending_forms(PORT, "s", "/projetos/dd"))
 
     def test_a_dead_location_does_not_hide_the_others(self):
         """Um projeto apagado da lista não pode calar o pet inteiro.

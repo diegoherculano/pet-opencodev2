@@ -212,6 +212,98 @@ class WiringTests(unittest.TestCase):
         self.assertEqual(len(activity), 1)
 
 
+class SessionAliveTests(unittest.TestCase):
+    """Todo evento publica prova de vida, com o dono que ele tiver.
+
+    O bug 22: publicar só o que vira estado media o trabalho errado. Num
+    turno real de 150s vieram 819 eventos e 771 eram
+    ``session.reasoning.delta``, que não vira estado porque é instante
+    interno do turno. O relógio de silêncio da instância ficava congelado
+    durante o raciocínio inteiro, e o balão caía para "Ready" com o agente
+    pensando.
+    """
+
+    def build(self):
+        from petwatch.monitor import OpenCodeMonitor
+
+        monitor = OpenCodeMonitor()
+
+        seen = []
+
+        def registrar(session_id, directory):
+            seen.append((session_id, directory))
+
+        monitor.session_alive.connect(registrar)
+
+        return monitor, seen
+
+    def test_an_unmapped_event_still_counts_as_liveness(self):
+        monitor, seen = self.build()
+
+        monitor.process_event(None, {
+            "type": "session.reasoning.delta",
+            "data": {"sessionID": "ses_a", "delta": " hmm"},
+        })
+
+        self.assertEqual(seen, [("ses_a", None)])
+
+    def test_the_reported_stream_dominates_and_is_all_unmapped(self):
+        """A medição que motivou a mudança, virada em teste.
+
+        Num turno real o stream é quase todo ``session.reasoning.delta``.
+        Se algum deles virar estado, o ``state_from_event`` mudou e o
+        problema volta a aparecer de outro jeito.
+        """
+
+        monitor, seen = self.build()
+
+        monitor.process_event(None, {"type": "session.reasoning.delta",
+                                     "data": {"sessionID": "ses_a", "delta": "x"}})
+
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][0], "ses_a")
+
+    def test_an_event_without_a_session_carries_the_location(self):
+        """``shell.created`` não tem ``sessionID``, mas tem ``location``."""
+
+        monitor, seen = self.build()
+
+        monitor.process_event(None, {
+            "type": "shell.created",
+            "location": {"directory": "/projetos/dd"},
+            "data": {"info": {"id": "sh_1", "command": "npm test"}},
+        })
+
+        self.assertEqual(seen, [(None, "/projetos/dd")])
+
+    def test_a_global_event_has_no_owner_at_all(self):
+        monitor, seen = self.build()
+
+        monitor.process_event(None, {"type": "server.connected", "data": {}})
+
+        self.assertEqual(seen, [(None, None)])
+
+    def test_liveness_is_emitted_before_the_state_rules(self):
+        """A prova de vida não pode depender da tradução do evento.
+
+        Se dependesse, um evento que nenhuma regra conhece seria
+        descartado — que é exatamente o defeito.
+        """
+
+        from petwatch.monitor import OpenCodeMonitor
+
+        monitor = OpenCodeMonitor()
+
+        order = []
+        monitor.session_alive.connect(lambda *_: order.append("alive"))
+        monitor.state_changed.connect(lambda _s: order.append("state"))
+
+        monitor.process_event(None, {"type": "session.step.started",
+                                     "data": {"sessionID": "ses_a"}})
+
+        self.assertEqual(order, ["alive", "state"])
+
+
 class EmitStateTests(unittest.TestCase):
     """``state_changed`` só fala quando o estado muda."""
 
@@ -345,9 +437,11 @@ class PendingQuestionTests(unittest.TestCase):
     virava a própria causa do falso positivo: uma resposta perdida
     deixava o balão travado para sempre.
 
-    O que o monitor faz agora é emitir :attr:`OpenCodeMonitor.ask_seen`,
-    que acorda a consulta de pendência — e a resposta do usuário passa
-    a ser lida do servidor, em :mod:`petwatch.pending`.
+    O que o monitor faz agora é emitir :attr:`OpenCodeMonitor.ask_seen` e
+    :attr:`OpenCodeMonitor.released`, que acordam a consulta de
+    pendência — e a resposta do usuário passa a ser lida do servidor, em
+    :mod:`petwatch.pending`. Os dois carregam o ``sessionID`` do pedido
+    porque o stream é global: sem ele, a espera não tem dono (bug 20).
     """
 
     def build(self):
@@ -358,7 +452,7 @@ class PendingQuestionTests(unittest.TestCase):
         asked = []
         states = []
 
-        monitor.ask_seen.connect(lambda: asked.append(1))
+        monitor.ask_seen.connect(lambda *_: asked.append(1))
         monitor.state_changed.connect(states.append)
 
         return monitor, asked, states
@@ -388,11 +482,70 @@ class PendingQuestionTests(unittest.TestCase):
         self.assertEqual(states, [STATE_WORKING])
 
     def test_the_answer_wakes_the_pet_as_well(self):
-        monitor, asked, _states = self.build()
+        """A resposta também é hora de consultar.
+
+        Soltar a espera é tão lento quanto criar, e o tique do poll pode
+        estar a 20s de distância.
+        """
+
+        from petwatch.monitor import OpenCodeMonitor
+
+        monitor = OpenCodeMonitor()
+
+        released = []
+
+        monitor.released.connect(lambda *_: released.append(1))
 
         monitor.process_event(None, {"type": "form.replied"})
 
-        self.assertEqual(len(asked), 1)
+        self.assertEqual(len(released), 1)
+
+    def test_the_ask_carries_the_session_that_asked(self):
+        """O dono da espera é o que separa uma aba da outra."""
+
+        from petwatch.monitor import OpenCodeMonitor
+
+        monitor = OpenCodeMonitor()
+
+        seen = []
+
+        monitor.ask_seen.connect(seen.append)
+
+        monitor.process_event(None, {
+            "type": "form.created",
+            "data": {"sessionID": "ses_a"},
+        })
+
+        self.assertEqual(seen, ["ses_a"])
+
+    def test_an_ask_without_a_session_is_still_an_ask(self):
+        from petwatch.monitor import OpenCodeMonitor
+
+        monitor = OpenCodeMonitor()
+
+        seen = []
+
+        monitor.ask_seen.connect(seen.append)
+
+        monitor.process_event(None, {"type": "form.created"})
+
+        self.assertEqual(seen, [None])
+
+    def test_a_reply_carries_its_session_too(self):
+        from petwatch.monitor import OpenCodeMonitor
+
+        monitor = OpenCodeMonitor()
+
+        seen = []
+
+        monitor.released.connect(seen.append)
+
+        monitor.process_event(None, {
+            "type": "form.replied",
+            "data": {"sessionID": "ses_b"},
+        })
+
+        self.assertEqual(seen, ["ses_b"])
 
     def test_a_permission_request_wakes_the_pet(self):
         monitor, asked, states = self.build()

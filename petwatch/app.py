@@ -25,7 +25,7 @@ from .monitor import OpenCodeMonitor
 from .prefs import load_prefs, save_prefs
 from .sessions import SessionBoard, StatusPoller
 from .sizes import get_size
-from .states import STATE_CONNECTING, STATE_WAITING
+from .states import STATE_CONNECTING
 from .theme import ThemeNotFoundError, load_theme
 from .ui import PetRenderer, always_on_top_supported
 from .ui.menu import MenuHandlers, PetMenu
@@ -196,6 +196,11 @@ class PetApplication(QApplication):
                 Qt.ConnectionType.QueuedConnection,
             )
 
+            self.monitor.released.connect(
+                self.on_released,
+                Qt.ConnectionType.QueuedConnection,
+            )
+
             self.monitor.reconnected.connect(
                 self.on_reconnected,
                 Qt.ConnectionType.QueuedConnection,
@@ -205,6 +210,15 @@ class PetApplication(QApplication):
 
         self.monitor.state_changed.connect(
             self.on_stream_state,
+            Qt.ConnectionType.QueuedConnection,
+        )
+
+        # A prova de vida do stream entra sempre, e não só com a consulta de
+        # status ligada: é ela que impede `demote_stale` de trocar trabalho
+        # real por "Ready" (bug 22), e `demote_stale` também roda pelo
+        # watchdog, que existe nos dois casos.
+        self.monitor.session_alive.connect(
+            self.on_session_alive,
             Qt.ConnectionType.QueuedConnection,
         )
 
@@ -284,19 +298,13 @@ class PetApplication(QApplication):
     def _cards(self) -> list[tuple[str, str, bool]]:
         """Balões a desenhar: ``(estado, nome, espera_resposta)``.
 
-        O estado visível de cada instância é o "aguardando" quando há
-        pedido **dela** — é o único estado que o stream não produz, e é o
-        único que pinta cor.
+        Quem decide é o quadro — ver :meth:`SessionBoard.cards`. A
+        interface não repete a regra aqui: quando repetia, o sprite e o
+        balão discordavam, e as duas metades do "aguardando" (a do servidor
+        e a da degradação) viviam em lugares diferentes.
         """
 
-        cards: list[tuple[str, str, bool]] = []
-
-        for instance in self.board.visible():
-            state = STATE_WAITING if instance.needs_action else instance.state
-
-            cards.append((state, instance.label, instance.wants_attention))
-
-        return cards
+        return self.board.cards()
 
     def _sync(self) -> None:
         """Publica o quadro, se mudou."""
@@ -325,12 +333,29 @@ class PetApplication(QApplication):
         # timeout de cortar um "aguardando" legítimo.
         self.watchdog.note_state(state)
 
-    @Slot(str, object)
-    def on_session_event(self, state: str, session_id: object) -> None:
+    @Slot(str, object, object)
+    def on_session_event(self, state: str, session_id: object,
+                         directory: object = None) -> None:
         """Um evento que virou estado, na sessão que o produziu."""
 
         self.board.note_event(session_id if isinstance(session_id, str) else None,
-                              state)
+                              state,
+                              directory if isinstance(directory, str) else None)
+
+        self._sync()
+
+    @Slot(object, object)
+    def on_session_alive(self, session_id: object, directory: object) -> None:
+        """Prova de vida do stream, sem estado.
+
+        Não é o estado — é a prova de que a instância **está viva**, que é
+        o que impede `demote_stale` de chamá-la de parada no meio de um
+        raciocínio (bug 22). Por isso entra em toda evento, inclusive nos
+        que não viram estado.
+        """
+
+        self.board.note_alive(session_id if isinstance(session_id, str) else None,
+                              directory if isinstance(directory, str) else None)
 
         self._sync()
 
@@ -394,6 +419,19 @@ class PetApplication(QApplication):
 
         self.board.note_active(ids)
 
+        # Envelhecer o balão aqui, e não só em `on_watchdog_idle`.
+        #
+        # O watchdog global só dispara depois de `IDLE_TIMEOUT` de silêncio
+        # **do servidor inteiro**, e com outra aba trabalhando ele nunca
+        # dispara — que é o uso normal, várias abas do opencode abertas.
+        # Aí a sessão que travou ficava em "Thinking" para sempre, porque
+        # a única chamada de `demote_stale` estava atrás desse watchdog.
+        # Aqui não: a consulta de ativas é o que descobre que a instância
+        # continua listada, então é também o lugar natural para conferir
+        # que ela de fato calou. Ver o bug 21.
+        if ids is not None:
+            self.board.demote_stale(self.watchdog.timeout)
+
         self._sync()
 
     @Slot(object)
@@ -412,22 +450,36 @@ class PetApplication(QApplication):
 
         self._sync()
 
-    @Slot()
-    def on_ask_seen(self) -> None:
-        """O stream viu um pedido (ou a resposta a um).
+    @Slot(object)
+    def on_ask_seen(self, session_id: object = None) -> None:
+        """O stream viu um pedido.
 
         Acorda a consulta na hora, para o pulso não esperar o tique do
         poll. A trava por stream fica posta como rede de segurança: em
         um servidor sem as rotas do v2 é ela que ainda mostra
-        "aguardando".
+        "aguardando" — e ela guarda **de quem** foi o pedido, senão o
+        ``session.idle`` de outra aba a derruba (bug 20).
         """
 
-        self.board.note_ask()
+        self.board.note_ask(session_id if isinstance(session_id, str) else None)
 
         self._sync()
 
         if self.poller is not None:
             self.poller.poke()
+
+    @Slot(object)
+    def on_released(self, session_id: object = None) -> None:
+        """O stream viu a resposta a um pedido.
+
+        Solta a trava na hora, em vez de esperar o tique do poll. Com o
+        servidor respondendo, a espera real é a consulta que decide — isto
+        só antecipa o que ela ia dizer.
+        """
+
+        self.board.note_release(session_id if isinstance(session_id, str) else None)
+
+        self._sync()
 
     @Slot()
     def on_reconnected(self) -> None:

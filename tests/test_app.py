@@ -194,7 +194,7 @@ class WiringTests(unittest.TestCase):
 
         self.sync_state()
 
-        APP.on_ask_seen()
+        APP.on_ask_seen("ses_a")
 
         APP.monitor.state_changed.emit("working")
 
@@ -266,7 +266,11 @@ class WiringTests(unittest.TestCase):
 
         # Finge o silêncio: o watchdog dispara depois de ``timeout`` sem
         # atividade, e o teste não vai dormir 45s para isso.
-        APP.board.instances["ses_a"].touched_at -= APP.watchdog.timeout + 1
+        #
+        # Envelhece ``evented_at`` e não ``touched_at``: é o relógio do
+        # stream que diz que a instância calou — ``touched_at`` é reescrito
+        # a cada consulta de ativas e nunca envelhece sozinho (bug 21).
+        APP.board.instances["ses_a"].evented_at -= APP.watchdog.timeout + 1
 
         APP.watchdog.note_state(APP.pet.state)
 
@@ -340,6 +344,195 @@ class WiringTests(unittest.TestCase):
         flagged = [card for card in APP.pet.cards if card[2]]
 
         self.assertEqual([card[0] for card in flagged], ["waiting"])
+
+    def test_the_card_agrees_with_the_sprite_in_degraded_mode(self):
+        """O bug 20, visto pela interface.
+
+        Degradado, o pedido só existe no stream. O sprite mudava para
+        "waiting", mas o balão continuava dizendo "Thinking" — o usuário
+        via exatamente isso, com a pergunta aberta na tela do opencode.
+        """
+
+        self.sync_state()
+
+        APP.board.note_active(["ses_pergunta", "ses_outra"])
+        APP.on_session_event("working", "ses_pergunta")
+
+        # Degradação: o servidor não tem as rotas do v2.
+        APP.on_answers(None)
+        APP.on_ask_seen("ses_pergunta")
+
+        QCoreApplication.processEvents()
+
+        self.assertEqual(APP.pet.state, "waiting")
+        self.assertIn("waiting", [card[0] for card in APP.pet.cards])
+
+    def test_another_tab_going_idle_keeps_the_card_saying_waiting(self):
+        self.sync_state()
+
+        APP.board.note_active(["ses_pergunta", "ses_outra"])
+        APP.on_session_event("working", "ses_pergunta")
+        APP.on_answers(None)
+        APP.on_ask_seen("ses_pergunta")
+
+        APP.on_session_event("idle", "ses_outra")
+
+        QCoreApplication.processEvents()
+
+        self.assertEqual(APP.pet.state, "waiting")
+        self.assertEqual(
+            [card[0] for card in APP.pet.cards if card[2]], ["waiting"],
+        )
+
+    def test_the_reply_releases_the_card_as_soon_as_the_stream_says_so(self):
+        """A resposta não espera o tique do poll para limpar a tela."""
+
+        self.sync_state()
+
+        APP.board.note_active(["ses_a"])
+        APP.on_answers(None)
+        APP.on_ask_seen("ses_a")
+
+        QCoreApplication.processEvents()
+
+        self.assertEqual(APP.pet.state, "waiting")
+
+        APP.on_released("ses_a")
+
+        QCoreApplication.processEvents()
+
+        self.assertNotEqual(APP.pet.state, "waiting")
+        self.assertFalse([card for card in APP.pet.cards if card[2]])
+
+    def test_a_session_stuck_while_another_tab_works_still_goes_ready(self):
+        """A segunda metade do bug 21: o watchdog global não pode ser o único guarda.
+
+        O sintoma reportado é o balão preso em "Thinking" com o agente
+        parado. A rede de segurança existia, mas só era acionada por
+        ``on_watchdog_idle`` — e o watchdog global exige ``IDLE_TIMEOUT``
+        de silêncio **do servidor inteiro**. Com outra aba do opencode
+        trabalhando, o que é o uso normal, ele nunca dispara, e a sessão
+        travada ficava em "Thinking" para sempre.
+
+        Aqui a outra aba continua eventos durante toda a janela, e mesmo
+        assim a travada tem de virar "Ready".
+        """
+
+        self.sync_state()
+
+        APP.board.note_active(["ses_travada", "ses_ocupada"])
+
+        # A aba que trabalha fala sem parar; a travada nunca fala.
+        APP.on_session_event("working", "ses_ocupada")
+
+        self.assertEqual(APP.pet.state, "working")
+
+        # Silêncio só na travada. Envelhece o relógio de evento em relação
+        # ao relógio do próprio quadro — `note_active` chama `tick()`, que
+        # reescreve `_now`, então mexer em `_now` não serviria.
+        APP.board.instances["ses_travada"].evented_at = (
+            APP.board._clock() - APP.watchdog.timeout - 1
+        )
+
+        # A consulta de ativas continua devolvendo as duas — é o que o
+        # servidor faz com uma sessão travada.
+        APP.on_active(["ses_travada", "ses_ocupada"])
+
+        QCoreApplication.processEvents()
+
+        # O quadro é a fonte da verdade; o balão mostra o que ele arbitrou.
+        states = {
+            session_id: instance.state
+            for session_id, instance in APP.board.instances.items()
+        }
+
+        self.assertEqual(states["ses_travada"], "idle")
+        self.assertEqual(states["ses_ocupada"], "working")
+
+        self.assertEqual(
+            sorted(state for state, _label, _wants in APP.board.cards()),
+            ["idle", "working"],
+        )
+
+    def test_the_reasoning_deltas_keep_the_bubble_in_thinking(self):
+        """O sintoma reportado do bug 22, no caminho da tela inteira.
+
+        O agente estava pensando e o balão dizia "Ready". A causa era o
+        relógio de silêncio: só o evento que virava estado o movia, e
+        ``session.reasoning.delta`` — que é a esmagadora maioria do
+        stream — não vira estado. Com o poll seguindo, o balão caía no
+        meio do raciocínio.
+        """
+
+        self.sync_state()
+
+        APP.board.note_active(["ses_a"])
+        APP.on_session_event("working", "ses_a", "/p")
+
+        self.assertEqual(APP.pet.state, "working")
+
+        for _ in range(10):
+            APP.board._now += APP.watchdog.timeout / 2
+
+            # O que o stream emite de verdade durante o raciocínio.
+            APP.on_session_alive("ses_a", "/p")
+            APP.on_active(["ses_a"])
+
+        QCoreApplication.processEvents()
+
+        self.assertEqual(APP.pet.state, "working")
+        self.assertEqual([card[0] for card in APP.pet.cards], ["working"])
+
+    def test_a_shell_event_keeps_the_bubble_in_thinking(self):
+        """``shell.created`` não traz ``sessionID``; o ``location`` é o dono."""
+
+        self.sync_state()
+
+        APP.board.note_active(["ses_a"])
+        APP.on_session_event("working", "ses_a", "/p")
+
+        for _ in range(10):
+            APP.board._now += APP.watchdog.timeout / 2
+
+            APP.on_session_alive(None, "/p")
+            APP.on_active(["ses_a"])
+
+        QCoreApplication.processEvents()
+
+        self.assertEqual(APP.pet.state, "working")
+
+    def test_liveness_does_not_invent_a_bubble(self):
+        """Evento de servidor global não vira balão nem estado."""
+
+        self.sync_state()
+
+        APP.on_session_alive(None, None)
+        APP.on_session_alive("ses_nao_existe", None)
+
+        QCoreApplication.processEvents()
+
+        self.assertEqual(list(APP.board.instances), [])
+        self.assertEqual(APP.pet.cards, [])
+
+    def test_a_session_that_keeps_working_is_not_released_by_the_poll(self):
+        """O contrário: o poll não pode rebaixar quem está de fato trabalhando."""
+
+        self.sync_state()
+
+        APP.board.note_active(["ses_a"])
+
+        APP.on_session_event("working", "ses_a")
+
+        for _ in range(5):
+            APP.board._now += APP.watchdog.timeout / 2
+
+            APP.on_session_event("working", "ses_a")
+
+            APP.on_active(["ses_a"])
+
+        QCoreApplication.processEvents()
+
+        self.assertEqual([card[0] for card in APP.pet.cards], ["working"])
 
     def test_everything_published_sees_the_same_state(self):
         """Balão, bandeja e watchdog recebem o estado **visível**.

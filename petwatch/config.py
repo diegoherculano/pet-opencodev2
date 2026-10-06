@@ -106,6 +106,10 @@ MAX_WATCHED_PROJECTS = 12
 
 #: Tempo sem reler a lista de projetos. Ela muda quando o usuário abre
 #: um projeto novo, e um ciclo de 2s bastaria para perceber.
+#:
+#: É também o prazo de recuperação de um *location* anotado como morto:
+#: ele sai da varredura — dois GETs por ciclo para sempre é desperdício — e
+#: volta sozinho quando a lista é relida, sem precisar reiniciar o pet.
 PROJECTS_TTL_SECONDS = 60.0
 
 #: Diretório observado, quando o usuário quer **um** projeto em vez de

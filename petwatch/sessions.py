@@ -31,6 +31,12 @@ o opencode manda ``session.updated``/``session.viewed`` (o payload traz
 fallback final é o diretório do projeto, e sem nada disso o prefixo do
 ``sessionID`` — porque "ses_1047…" ainda diz mais do que um balão
 anônimo.
+
+**A espera também é por instância.** Quando o servidor não tem as rotas
+do v2, o que se sabe sobre pedidos vem do stream — que é global e volátil.
+Aí a espera vira uma trava, e a trava guarda **de quem** foi o pedido
+(:meth:`SessionBoard.note_ask`), porque sem dono qualquer evento de
+qualquer aba a solta. Ver o bug 20 em ``docs/BUGS.md``.
 """
 
 from __future__ import annotations
@@ -124,6 +130,24 @@ class Instance:
     #: Quando foi a última vez que algo aconteceu nela.
     touched_at: float = 0.0
 
+    #: Quando foi o último **evento** do stream desta sessão.
+    #:
+    #: Separado de :attr:`touched_at` porque os dois medem coisas
+    #: diferentes, e a confusão entre os dois é o bug 21: ``touched_at`` é
+    #: reescrito a cada consulta de ``/api/session/active``, enquanto este
+    #: só anda quando o opencode realmente emite algo. Uma sessão que o
+    #: servidor continua listando como ``running`` mas que não emite evento
+    #: nenhum tem ``touched_at`` sempre fresco e :attr:`evented_at` parado —
+    #: só o segundo campo conta silêncio de verdade.
+    #:
+    #: **Qualquer** evento da sessão o move, não só os que viram estado:
+    #: ver :meth:`SessionBoard.note_alive` e o bug 22.
+    evented_at: float = 0.0
+
+    #: O "pronto" deste balão foi um palpite nosso, derivado do silêncio,
+    #: e não algo que o servidor disse. Ver :meth:`SessionBoard.demote_stale`.
+    demoted: bool = False
+
     #: Ordem de chegada, para desempatar sem mexer na lista toda.
     order: int = 0
 
@@ -140,13 +164,17 @@ class Instance:
 
     @property
     def wants_attention(self) -> bool:
-        """Se o balão desta instância deve sair na cor de alerta.
+        """Se o servidor disse que esta instância espera resposta.
 
         Depende **só** de ``needs_action``, e não do estado: o estado de
         uma instância nunca é "aguardando" (nenhuma regra do stream
-        produz isso, por decisão — ver :mod:`petwatch.events`). Quem
-        diz que há espera é o servidor, e é o ``needs_action`` que veio
-        de lá.
+        produz isso, por decisão — ver :mod:`petwatch.events`). Quem diz
+        que há espera é o servidor, e é o ``needs_action`` que veio de lá.
+
+        A rede de segurança da degradação (o stream viu um pedido sem o
+        servidor responder) mora em :meth:`SessionBoard._wants`, porque
+        ela é do quadro e não da instância: depende do estado do servidor
+        no momento.
         """
 
         return self.needs_action
@@ -175,14 +203,20 @@ class SessionBoard:
     #: ``None`` = o servidor ainda não respondeu.
     pending_answered: bool | None
 
-    #: Trava por stream, só para a degradação.
-    latched: bool
-
     #: Estado do stream sem dono — o que o pet mostra sem balão nenhum.
     stream_state: str
 
     #: Estado visível do pet, já arbitrado.
     state: str
+
+    #: Sessões que pediram algo e ainda não responderam, pela rede de
+    #: segurança do stream. Só é consultado quando o servidor não
+    #: responde — ver :attr:`_orphan_latch`.
+    _latched: set[str]
+
+    #: Um pedido cujo evento não traz ``sessionID`` não pode ser atribuído
+    #: a uma sessão, e a espera é de todo mundo.
+    _orphan_latch: bool
 
     _order: int
 
@@ -196,14 +230,32 @@ class SessionBoard:
         self.instances = {}
         self.supported = True
         self.pending_answered = None
-        self.latched = False
         self.stream_state = STATE_CONNECTING
         self.state = STATE_CONNECTING
+
+        self._latched = set()
+        self._orphan_latch = False
 
         self._order = 0
         self._now = 0.0
 
         self._clock = clock or time.monotonic
+
+    # ------------------------------------------------------------
+    # Degradação: a espera que o stream deixou ver
+    # ------------------------------------------------------------
+
+    @property
+    def latched(self) -> bool:
+        """Há algum pedido pendente pelo stream?
+
+        Só é levado em conta quando o servidor não responde nas rotas do
+        v2 (:attr:`pending_answered` é ``None``). Com o servidor
+        respondendo, quem decide é ele — e um evento perdido não pode
+        virar um "aguardando" que não existe.
+        """
+
+        return bool(self._latched or self._orphan_latch)
 
     # ------------------------------------------------------------
     # Entradas: o stream
@@ -224,34 +276,121 @@ class SessionBoard:
 
         return self._now
 
-    def note_event(self, session_id: str | None, state: str | None) -> None:
+    def note_event(self, session_id: str | None, state: str | None,
+                   directory: str | None = None) -> None:
         """Um evento que traduziu para ``state``, naquela sessão.
 
         ``session_id`` é ``None`` para evento sem dono — global do
         servidor (``server.connected``, ``project.updated``). Esses não
         criam balão: são ruído entre as abas.
+
+        O fim de turno de uma sessão solta a espera **dela**, e só dela: um
+        ``session.idle`` de outra aba não pode derrubar o pedido de uma
+        pergunta que continua aberta. A trava global que existia antes
+        disso é o bug 15 de novo, e ele só não aparece quando a degradação
+        está desligada.
+
+        ``directory`` é o *location* do evento, e é anotado aqui porque é
+        ele que dá dono aos eventos que não trazem ``sessionID`` —
+        ``shell.created``, ``file.edited`` e companhia — quando o
+        :meth:`note_alive` precisar atribuir por projeto.
         """
 
         if state:
             self.stream_state = state
 
             if state == STATE_IDLE:
-                self.latched = False
+                self._release(session_id)
 
         if session_id is not None and state:
             instance = self._touch(session_id)
 
+            if directory:
+                instance.directory = directory
+
             instance.state = state
+
+            # Um estado que veio do servidor vale mais do que qualquer
+            # palpite nosso: o palpite do silêncio está desatualizado.
+            instance.demoted = False
+
+            # Só o stream anda este relógio. `_touch` acima já refrescou
+            # `touched_at`, que a consulta de ativas reescreve a cada ciclo
+            # — ver `Instance.evented_at`.
+            #
+            # O carimbo é `self._clock()` e **não** `self._now`: `self._now`
+            # só anda quando a consulta de status passa, então usá-lo aqui
+            # atrasava a prova de vida em até um ciclo do poll (20s) e
+            # encurtava o timeout na mesma medida. Era o bug 22.
+            self._prove_alive(instance, self._clock())
 
         self._refresh()
 
+    def note_alive(self, session_id: str | None,
+                   directory: str | None = None) -> None:
+        """Prova de vida do stream, **sem** estado.
+
+        É a entrada que segura o balão em "Thinking". ``demote_stale``
+        decide que uma instância parou de trabalhar olhando quanto tempo
+        faz que ela não fala — e, sem esta entrada, o que contava como
+        "falar" era só o evento que virava estado **e** trazia
+        ``sessionID``. Medido num turno real de 150s: 819 eventos, dos
+        quais **771 eram ``session.reasoning.delta``** (nem viram estado,
+        porque são instante interno do turno) e os ``shell.*`` não trazem
+        ``sessionID`` nenhum. O relógio ficava congelado durante o
+        raciocínio inteiro e o balão caía para "Ready" com o agente
+        pensando — bug 22.
+
+        O dono é procurado nesta ordem:
+
+        - ``session_id``, quando o evento traz — é o dono preciso;
+        - ``directory``, quando não traz. `shell.created`, ``shell.exited``
+          e ``file.edited`` são eventos de *location*, e o envelope carrega
+          o diretório; o esquema do opencode confirma que o payload deles
+          não tem ``sessionID`` (ver
+          :func:`petwatch.events.extract_location_directory`).
+
+        Nenhum dos dois: o evento é global do servidor e não diz nada sobre
+        uma instância específica — aí nada é movido, porque atribuir por
+        palpite seria inventar dono.
+
+        **Não muda estado.** O que muda é o relógio, e é
+        :meth:`demote_stale` que age sobre ele. A única exceção é
+        desfazer um rebaixamento anterior por silêncio (ver
+        :attr:`Instance.demoted`): a inferência é nossa, e a prova de vida
+        é do servidor, então a prova vence.
+        """
+
+        if session_id is None and not directory:
+            return
+
+        now = self._clock()
+
+        spoken = False
+
+        for instance in self.instances.values():
+            if not self._owned_by(instance, session_id, directory):
+                continue
+
+            spoken = True
+
+            self._prove_alive(instance, now)
+
+        if spoken:
+            self._refresh()
+
     def note_global_state(self, state: str) -> None:
-        """Estado do stream sem balão: o "pronto" geral, e a degradação."""
+        """Estado do stream sem balão: o "pronto" geral, e a degradação.
+
+        Aqui o "pronto" é global de verdade — é o monitor reconectando, e o
+        que passou na queda ninguém sabe. Por isso esta solta **todas** as
+        esperas, e não só uma.
+        """
 
         self.stream_state = state
 
         if state == STATE_IDLE:
-            self.latched = False
+            self._release(None)
 
         self._refresh()
 
@@ -266,34 +405,65 @@ class SessionBoard:
 
         Uma instância esperando resposta é exceção: ela não calou, está
         esperando o usuário, e o ``waiting`` continua certo.
+
+        **Mede :attr:`Instance.evented_at`, não ``touched_at``.** Esta é a
+        correção do bug 21: ``touched_at`` é reescrito por
+        :meth:`note_active` a cada ciclo do ``StatusPoller``, então uma
+        instância que o servidor continua listando como ``running`` — e que
+        não emite evento nenhum — tinha ``touched_at`` sempre fresco e
+        ``demote_stale`` nunca a alcançava. O balão ficaria em "Thinking"
+        para sempre, que é o sintoma reportado.
+
+        A exceção é a instância que **nunca** foi vista trabalhando: ela
+        ainda está em ``connecting``, que o laço acima já pula, e não tem
+        relógio de silêncio — porque ainda não começou.
+
+        **O "pronto" daqui é um palpite, e por isso é revogável.** Ele sai
+        do silêncio, não do servidor, e é anotado em
+        :attr:`Instance.demoted` para que :meth:`note_alive` o desfaça no
+        primeiro evento que chegar. Sem essa marca o rebaixamento era
+        permanente, porque :meth:`note_active` só promove a partir de
+        ``connecting`` — e um único silêncio mal medido deixava o balão em
+        "Ready" pelo resto do turno. Era a segunda metade do bug 22.
         """
 
         deadline = self._clock() - timeout
 
         for instance in self.instances.values():
-            if instance.needs_action or instance.state != STATE_WORKING:
+            if self._wants(instance) or instance.state != STATE_WORKING:
                 continue
 
-            if instance.touched_at < deadline:
+            # `evented_at` em zero é "ninguém falou ainda", e não "falou há muito
+            # tempo": antes do primeiro carimbo não há silêncio para medir.
+            # `note_active` já escreve o relógio na promoção, então uma
+            # instância em "working" sempre tem carimbo — a guarda é para o
+            # caso de uma `Instance` montada à mão, que não passa por lá.
+            if instance.evented_at and instance.evented_at < deadline:
                 instance.state = STATE_IDLE
 
+                instance.demoted = True
+
         self._refresh()
 
-    def note_ask(self) -> None:
+    def note_ask(self, session_id: str | None = None) -> None:
         """O stream viu um pedido.
 
-        Não decide nada: só acende a rede de segurança da degradação. Quem
-        confirma é a consulta ao servidor.
+        Não decide nada: acende a rede de segurança da degradação, anotando
+        **de quem** foi o pedido. Quem confirma é a consulta ao servidor —
+        e é ela que vale assim que o servidor responder.
         """
 
-        self.latched = True
+        if session_id is None:
+            self._orphan_latch = True
+        else:
+            self._latched.add(session_id)
 
         self._refresh()
 
-    def note_release(self) -> None:
+    def note_release(self, session_id: str | None = None) -> None:
         """O stream viu a resposta a um pedido."""
 
-        self.latched = False
+        self._release(session_id)
 
         self._refresh()
 
@@ -321,20 +491,27 @@ class SessionBoard:
 
             instance.active = True
 
-            current = list(dict.fromkeys(active))
-
-        for session_id in current:
-            instance = self._touch(session_id)
-
-            instance.active = True
-
             # O servidor lista aqui as sessões "*running*" em primeiro
             # plano, então uma sessão que ainda não gerou evento não
             # está parada esperando nada: está trabalhando. Sem isso o
             # balão dela nasceria sem título (o estado ``connecting`` é
             # mudo por contrato).
+            #
+            # ``evented_at`` é inicializado **aqui**, no momento em que a
+            # instância é declarada trabalhando, e não no primeiro evento:
+            # uma sessão que trava antes de emitir qualquer coisa nunca
+            # passaria por `note_event`, e sem este `evented_at` ela
+            # ficaria em zero para sempre — o que `demote_stale` lê como
+            # "nunca falou" e deixa em "Thinking" indefinidamente (bug 21).
+            #
+            # ``_clock()`` e não ``self._now`` pela mesma razão do bug 22:
+            # este relógio mede silêncio **real**, e `_now` só anda quando a
+            # consulta de status passa — usá-lo aqui dava ao silêncio uma
+            # carimboada de até um ciclo de poll mais antigo.
             if instance.state == STATE_CONNECTING:
                 instance.state = STATE_WORKING
+
+                instance.evented_at = self._clock()
 
         active_set = set(current)
 
@@ -369,7 +546,7 @@ class SessionBoard:
         # Resposta autoritativa: a trava do stream não vale mais. Ela só
         # existe para quando o servidor não tem as rotas, e mantê-la acesa
         # depois de uma resposta real seria um "aguardando" inventado.
-        self.latched = False
+        self._release(None)
 
         waiting = {ask.session_id for ask in asks if ask.session_id}
 
@@ -448,11 +625,11 @@ class SessionBoard:
                 instance
                 for instance in self.instances.values()
                 if instance.active
-                or instance.needs_action
+                or self._wants(instance)
                 or instance.touched_at > deadline
             ),
             key=lambda i: (
-                0 if i.wants_attention else 1 if i.state == STATE_WORKING else 2,
+                0 if self._wants(i) else 1 if i.state == STATE_WORKING else 2,
                 -i.touched_at,
                 i.order,
             ),
@@ -468,7 +645,7 @@ class SessionBoard:
         if not visible:
             return self.stream_state
 
-        if any(i.wants_attention for i in visible):
+        if any(self._wants(i) for i in visible):
             return STATE_WAITING
 
         if any(i.state == STATE_WORKING for i in visible):
@@ -476,9 +653,65 @@ class SessionBoard:
 
         return STATE_IDLE
 
+    def cards(self) -> list[tuple[str, str, bool]]:
+        """Balões a desenhar: ``(estado, nome, espera_resposta)``.
+
+        Vive aqui, e não na interface, porque é o quadro que sabe se uma
+        instância está esperando: no caminho normal isso veio do servidor,
+        e na degradação veio da trava do stream (ver :meth:`_wants`). A
+        interface só desenha o que o quadro arbitrou — foi exatamente essa
+        separação que faltava no bug 20, em que o sprite dizia "Waiting" e
+        o balão dizia "Thinking" ao mesmo tempo.
+        """
+
+        result: list[tuple[str, str, bool]] = []
+
+        for instance in self.visible():
+            wants = self._wants(instance)
+
+            state = STATE_WAITING if wants else instance.state
+
+            result.append((state, instance.label, wants))
+
+        return result
+
     # ------------------------------------------------------------
     # Internos
     # ------------------------------------------------------------
+
+    @staticmethod
+    def _owned_by(instance: Instance, session_id: str | None,
+                  directory: str | None) -> bool:
+        """Este evento tem esta instância como dona?
+
+        ``session_id`` manda quando vem: é o dono exato. Sem ele, o
+        *location* é o melhor que o evento oferece — e as instâncias que
+        o compartilham contam todas, porque um evento de arquivo não diz
+        qual das abas do projeto escreveu o arquivo.
+        """
+
+        if session_id is not None:
+            return instance.session_id == session_id
+
+        if not directory:
+            return False
+
+        return instance.directory == directory
+
+    def _prove_alive(self, instance: Instance, now: float) -> None:
+        """A instância falou em ``now``; desfaz o rebaixamento por silêncio.
+
+        A prova de vida é do servidor; o "pronto" que :meth:`demote_stale`
+        deduz do silêncio é nosso. Quando as duas coisas discordam, quem
+        sabe é o servidor.
+        """
+
+        instance.evented_at = now
+
+        if instance.demoted:
+            instance.demoted = False
+
+            instance.state = STATE_WORKING
 
     def _touch(self, session_id: str) -> Instance:
         instance = self.instances.get(session_id)
@@ -514,6 +747,47 @@ class SessionBoard:
         ]:
             del self.instances[session_id]
 
+    def _release(self, session_id: str | None) -> None:
+        """Solta a espera que o stream deixou ver.
+
+        ``session_id`` é ``None`` para soltar todas — usado pela resposta do
+        servidor (que é autoritativa), por um evento de resposta que não
+        trouxe dono, e pelo ``STATE_IDLE`` global da reconexão. Com uma
+        sessão, solta só a dela: o ``session.idle`` de outra aba não diz
+        nada sobre a pergunta que continua aberta aqui.
+        """
+
+        if session_id is None:
+            self._latched.clear()
+
+            self._orphan_latch = False
+
+            return
+
+        self._latched.discard(session_id)
+
+    def _wants(self, instance: Instance) -> bool:
+        """Esta instância está esperando resposta do usuário?
+
+        Duas fontes, e a ordem é o ponto. Primeiro o servidor: um pedido
+        que ``GET /api/form`` ou ``/api/permission/request`` devolvem é
+        fato, e vale sempre. Depois, e **só** quando o servidor não
+        respondeu nunca (``pending_answered is None``), o que o stream
+        disse: aí não há nada melhor, e um balão de "Thinking" com uma
+        pergunta aberta na tela é o pior resultado possível.
+
+        Fica aqui, e não em :attr:`Instance.wants_attention`, porque a
+        segunda metade depende do quadro — é a degradação estar ligada ou
+        não — e a instância não sabe disso.
+        """
+
+        if instance.needs_action:
+            return True
+
+        return self.pending_answered is None and (
+            instance.session_id in self._latched
+        )
+
     def _refresh(self) -> str | None:
         """Estado novo do pet, ou ``None`` se não mudou."""
 
@@ -527,12 +801,14 @@ class SessionBoard:
         return wanted
 
     def _wanted(self) -> str:
-        if any(i.wants_attention for i in self.instances.values()):
+        if any(self._wants(i) for i in self.instances.values()):
             return STATE_WAITING
 
         # Sem as rotas do v2, ou antes da primeira resposta, a trava do
-        # stream assume: é imperfeita, mas melhor que um pet mudo.
-        if self.pending_answered is None and self.latched:
+        # stream assume: é imperfeita, mas melhor que um pet mudo. Um
+        # pedido que não trouxe ``sessionID`` não tem balão próprio, então
+        # ele só consegue mexer no sprite.
+        if self.pending_answered is None and self._orphan_latch:
             return STATE_WAITING
 
         return self.headline()
@@ -610,6 +886,11 @@ class StatusPoller(QObject):
         #: estável, e refazer o GET a cada ciclo seria desperdício.
         self._names: dict[str, dict[str, Any]] = {}
 
+        #: Locations que o servidor respondeu que não existem mais.
+        #: Vive até a lista de projetos ser relida — ver
+        #: :meth:`StatusPoller._directories`.
+        self._missing: set[str] = set()
+
         #: A senha vem de um ``subprocess`` (``opencode service get
         #: password``), e ela não muda enquanto o serviço roda. Consultar
         #: de novo a cada ciclo seria um processo a cada 2s por nada.
@@ -664,9 +945,9 @@ class StatusPoller(QObject):
         """Um ciclo inteiro; devolve quanto dormir depois.
 
         ``fast`` é o ciclo de quem **tem** algo pendente: só as locations
-        queuosas são consultadas. O ciclo lento (``fast=False``) varre
-        todos os projetos, e é ele que pega um pedido que apareceu sem o
-        stream contar.
+        que já têm pedido aberto são consultadas. O ciclo lento
+        (``fast=False``) varre todos os projetos, e é ele que pega um
+        pedido que apareceu sem o stream contar.
         """
 
         port = self._port_provider()
@@ -687,7 +968,14 @@ class StatusPoller(QObject):
         try:
             directories = self._directories(port, password, fast=fast)
 
-            asks = pending_asks(port, password, directories)
+            # ``missing`` é preenchido pela própria consulta: um
+            # *location* que o servidor disse que não existe sai da
+            # próxima varredura, porque voltar a perguntar a ele seriam dois
+            # GETs por ciclo para sempre. A lista de projetos é relida no
+            # TTL, então um diretório que reaparecer é pego de volta sem
+            # reiniciar o pet.
+            asks = pending_asks(port, password, directories,
+                                missing=self._missing)
 
         except Exception as exc:  # rede, HTTP, location inválida
             # Falhou não é "não há pendência": manter o estado é a
@@ -700,9 +988,19 @@ class StatusPoller(QObject):
 
         if asks is None:
             if self.supported:
-                log.info(
+                # Só chega aqui quando a **rota** não existe, e não quando
+                # um *location* some: um 404 de diretório morto é isolado
+                # em `pending_asks` e nunca chega como degradação.
+                #
+                # É ``warning`` e não ``info`` porque é um aviso de
+                # ambiente de que vale a pena saber: ele diz ao usuário por
+                # que o balão pode atrasar, e o modo solto descarta
+                # ``INFO``. O aviso já estava no log desde o bug 18 e
+                # ninguém o viu — ver o bug 20.
+                log.warning(
                     "[pet] este servidor não tem as rotas de pendência "
-                    "do v2; 'aguardando' volta a vir do stream",
+                    "do v2 (404 com corpo vazio); 'aguardando' volta a vir "
+                    "do stream, que é mais fraco",
                 )
 
             self.supported = False
@@ -791,15 +1089,33 @@ class StatusPoller(QObject):
             projects = self._projects = watched_directories(port, password)
             self._projects_read_at = now
 
+            # A lista mudou, então o julgamento sobre quais projects
+            # existem mudou também. ``/api/project`` guarda diretórios que
+            # já não têm pasta, e um 404 desses custaria dois GETs a cada
+            # ciclo para sempre se ninguém o anotasse.
+            self._missing.clear()
+
+        # Um *location* que o servidor disse que não existe não volta a ser
+        # consultado até a lista de projetos ser relida — e ela é relida a
+        # cada ``PROJECTS_TTL_SECONDS``, então um diretório que reaparecer
+        # é pego de volta sem precisar de reiniciar o pet.
+        live = [d for d in projects if d not in self._missing]
+
+        if not live:
+            # Todos os projetos guardados sumiram. Não é "não há nada
+            # pendente" — é "não há o que perguntar", e a lista vazia que
+            # `pending_asks` devolve nesse caso é a resposta certa.
+            return []
+
         # No ciclo rápido, só as locations que já têm pedido aberto. O
         # balão é um só por instância, então consultar as outras não
         # mudaria nada na tela — e são dois GETs por projeto a cada 2s.
         # O que a varredura completa pega é o caminho inverso: um pedido
         # novo, que chega antes por ``poke()``, vinda do próprio stream.
         if fast and self._hot:
-            hot = [d for d in self._hot if d in projects]
+            hot = [d for d in self._hot if d in live]
 
             if hot:
                 return hot
 
-        return projects
+        return live

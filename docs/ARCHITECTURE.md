@@ -158,12 +158,39 @@ Consequências no código:
   produzia o defeito.
 - `sessions.py` tem o `SessionBoard`: "aguardando" ganha de tudo enquanto
   o servidor confirmar, e cada balão diz de **qual** instância é. O
-  stream diz só se há trabalho ou turno Finished, e por sessão.
+  stream diz só se há trabalho ou turno encerrado, e por sessão.
 - Uma consulta que falha **não** muda o estado (`note_pending(None)` é
   no-op). Trocar "aguardando" por "trabalhando" sem saber seria inventar
   uma resposta do usuário.
 - O watchdog agora segue o estado **visível**, não o do stream: com uma
   espera real ele não age, e o que ele devolve passa pela arbitragem.
+
+### O 404 que significa duas coisas
+
+A degradação acima — servidor sem as rotas do v2 — se distingue por um
+**404**, e é o único jeito de desligar o recurso. Só que o servidor v2
+responde 404 por duas coisas, e o status não separa nenhuma:
+
+| 404 | corpo | o que é |
+| --- | --- | --- |
+| `LocationNotFoundError` | `{"_tag":"LocationNotFoundError", ...}` | o *location* não existe — projeto apagado que `GET /api/project` ainda guarda |
+| rota ausente | **vazio** | servidor v1, sem a rota: degradação de verdade |
+
+Ler os dois pelo status desligava o "aguardando" por causa de um diretório
+que não existe mais, e o pet voltava ao modo degradado — cujo único recurso
+é a trava do stream, e é o mais fraco dos dois. A distinção é o `_tag`
+(`pending.is_location_not_found`), e um *location* morto é isolado como já
+era o 500. Ver o [bug 20](BUGS.md#20-thinking-com-a-pergunta-aberta-na-tela).
+
+O que sobra da degradação também é por instância: a trava guarda **de quem**
+foi o pedido (`SessionBoard._latched`), porque o stream é global e o
+`session.idle` de uma aba não diz nada sobre a pergunta de outra. É o bug
+15, que só não aparecia enquanto a degradação nunca acontecia de verdade.
+
+E quem decide o que o balão escreve é o quadro (`SessionBoard.cards()`),
+não a interface: no caminho normal isso veio do servidor, e na degradação
+veio da trava, e as duas metades juntas é o que faz o sprite e o texto do
+balão concordarem.
 - Ao reconectar, o pet pergunta na hora. Antes ele chutava "não há nada
   pendente" e reiniciava a trava; agora o que existia durante a queda
   volta ao balão.
@@ -243,6 +270,53 @@ resposta" continua sendo o texto certo.
 Ele acompanha o estado **visível** (o que o `SessionBoard` escolheu), não
 o do stream: é essa distinção que impede o timeout de cortar uma espera
 real, agora que "aguardando" vem da consulta de pendência.
+
+**O watchdog global não é a única rede de segurança do balão.** Ele exige
+silêncio do servidor **inteiro**, então com outra aba do opencode
+trabalhando — o uso normal — ele nunca dispara. Por isso `on_active` também
+envelhece as instâncias: `SessionBoard.demote_stale` roda a cada consulta de
+`/api/session/active`, e é ela que descobre que uma instância continua
+listada como `running` mesmo sem emitir evento. Ver o
+[bug 21](BUGS.md#21-thinking-para-sempre-com-o-agente-parado).
+
+O relógio do silêncio é `Instance.evented_at`, e **não** `touched_at`:
+`touched_at` responde "o servidor ainda lista esta sessão", o que não prova
+que ela esteja trabalhando — a prova é o stream, e só ele move
+`evented_at`. Confundir os dois é o que prendia o balão em "Thinking".
+
+### Prova de vida é diferente de estado
+
+`Instance.evented_at` é movido por **todo** evento do stream, não só pelos que
+viram estado. As duas coisas são diferentes:
+
+- **estado** é o que o balão escreve, e é filtrado por regras: um evento que
+  acontece *dentro* do turno (`session.reasoning.delta`, `session.step.ended`)
+  não pode virar estado, ou o balão pisca;
+- **prova de vida** é só "isto ainda está falando", e vale para tudo.
+
+A confusão entre as duas dava o bug 22 — "Ready" no meio do raciocínio. Num
+turno real de 150 s, **771 dos 819 eventos eram
+`session.reasoning.delta`**, que não vira estado por desenho:
+
+```
+stream ─► monitor.session_alive(sessionID, diretório) ─► board.note_alive()
+                                                             └─ evented_at
+```
+
+O `sessionID` é o dono preciso, mas não vem em todo evento: `shell.created`,
+`shell.exited` e `file.edited` são eventos de *location*, e o **envelope**
+traz o diretório (`events.extract_location_directory`). Sem isso, um comando
+longo de shell — que só emite `shell.*` e `file.edited` — congelava o relógio
+e o balão caía no meio dele.
+
+Dois detalhes que não são óbvios:
+
+- O carimbo é o relógio **real** (`_clock()`), não o do último ciclo de poll
+  (`_now`). Com o segundo o timeout deixa de ser um número e vira uma faixa de
+  40 s a 65 s — e 45 s é o que foi medido.
+- `Instance.demoted` marca que o "pronto" saiu de uma inferência de silêncio.
+  É revogável, e `note_alive` o desfaz no primeiro evento. Um `session.idle`
+  dito pelo servidor não é — quem afirma que o turno acabou é o servidor.
 
 **O timeout é 45s porque foi medido, não chutado.** Capturei 3084 eventos
 de um turno real e medi os intervalos: o maior silêncio foi de **39,06s** e

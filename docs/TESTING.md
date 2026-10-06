@@ -7,13 +7,20 @@ Como rodar e o que a suíte cobre. Visão geral em [README](../README.md).
 QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests -t .
 ```
 
-478 testes cobrindo o mapeamento de eventos, o parser SSE, a leitura do
+572 testes cobrindo o mapeamento de eventos, o parser SSE, a leitura do
 `pet.json`, a escolha do asset, o transporte HTTP, as consultas de
 pendência e de sessão, o quadro de instâncias, a pilha de balões
 (empilhamento ancorado embaixo, janela fixa, reticências, cor de aviso), a
 prova de que o pet não se move ao entrar ou sair um balão, a geometria da
 pintura, o repaint da animação, o isolamento das preferências, o
 encerramento por sinal e a saída do terminal.
+
+Dois pares de testes são **simétricos de propósito**, e um deles falha se o
+outro for "corrigido" demais: `NoteAliveTests` exige que um agente que segue
+emitindo eventos fique em "Thinking" (bug 22), e
+`test_a_real_still_session_still_goes_ready` exige que um silêncio de verdade
+volte para "Ready" (bug 21). O mesmo vale para
+`DemotedIsRevocableTests` e para `test_an_idle_the_server_reported_is_not_ours_to_revoke`.
 
 Os testes rodam nos dois cenários: com e sem o plugin de WebP. Alguns
 detalhes que valem fora do código:
@@ -28,6 +35,17 @@ detalhes que valem fora do código:
 - `tests/test_ui.py::RepaintTests` roda o event loop de verdade contando
   `QEvent.Paint`: é o que pega um `animate()` que conta os quadros sem
   pedir repaint, ou seja, o pet parado na tela.
+- `tests/test_pending.py::LocationNotFoundTagTests` fixa a diferença entre
+  os dois 404 que o servidor v2 devolve — rota ausente (corpo vazio) e
+  *location* morto (`_tag: LocationNotFoundError`). Ler os dois pelo status
+  desligava o "aguardando" inteiro por causa de um projeto apagado, e o
+  sintoma era o balão em "Thinking" com a pergunta aberta (bug 20).
+- `tests/test_sessions.py::DegradedTests` confere que a trava do stream
+  guarda **de quem** é o pedido: o `session.idle` de outra aba não solta a
+  espera de uma pergunta que continua aberta.
+- `tests/test_sessions.py::Bug20DeadLocationTests` confere que um *location*
+  morto sai da varredura (dois GETs por ciclo para sempre) e volta sozinho
+  quando a lista de projetos é relida.
 - `tests/test_app.py` monta o `PetApplication` com um `prefs_path`
   temporário. Sem isso a suíte lê o tema escolhido no
   `~/.config/petwatch/prefs.json` de quem a roda — e cada `save()`

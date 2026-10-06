@@ -43,6 +43,20 @@ pergunta ``GET /api/session/active`` (quem está em ação) e
 
 Degradação: um servidor mais antigo (v1, sem essas rotas) responde 404.
 Aí o poller desliga e a trava por stream assume sozinha.
+
+**Cuidado com esse 404.** O servidor v2 responde 404 por duas coisas
+diferentes, e o status não distingue nenhuma delas:
+
+- a **rota** não existe (v1) — corpo **vazio**, e aí é degradação de verdade;
+- o ***location*** não existe — corpo ``{"_tag":"LocationNotFoundError"}``,
+  que é o caso de todo diretório guardado em ``GET /api/project`` que já
+  não tem pasta. Não é degradação: a rota respondeu, e a resposta é "não há
+  nada pendente aqui".
+
+Ler as duas pelo status desligava o recurso inteiro por causa de um
+projeto morto — e o pet voltava ao modo degradado, que é exatamente o que
+produz "Thinking" com a pergunta aberta na tela (bug 20). Ver
+:func:`is_location_not_found`.
 """
 
 from __future__ import annotations
@@ -72,6 +86,32 @@ log = logging.getLogger(__name__)
 #: permissão.
 KIND_FORM = "form"
 KIND_PERMISSION = "permission"
+
+#: ``_tag`` do corpo de um 404 que significa "este *location* não existe",
+#: e não "esta rota não existe".
+#:
+#: A distinção é o que separa uma degradação real de um projeto morto, e as
+#: duas coisas chegam com o **mesmo status**. Verificado no servidor v2 de
+#: verdade, nas duas formas:
+#:
+#: - rota ausente (``/api/formXYZ``) → 404 com corpo **vazio**;
+#: - *location* ausente → 404 com corpo JSON
+#:   ``{"_tag":"LocationNotFoundError", "location":{...}, "message":...}``.
+#:
+#: Confundir as duas desligava o "aguardando" do pet inteiro por causa de um
+#: diretório que não existe mais — ver `petwatch.sessions.StatusPoller`.
+LOCATION_NOT_FOUND_TAG = "LocationNotFoundError"
+
+
+class LocationNotFound(Exception):
+    """O *location* consultado não existe no servidor.
+
+    Não é degradação: a rota existe e respondeu. É o caso de um projeto que
+    a lista ``GET /api/project`` ainda guarda e que já não tem pasta — o
+    opencode não o remove da lista. A pergunta que esse diretório não pode
+    responder é "o que está pendente **aqui**", e a resposta é "nada, porque
+    aqui não existe mais nada".
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +218,21 @@ def _text(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def is_location_not_found(payload: Any) -> bool:
+    """O corpo é o 404 de *location* morta, e não o de rota ausente.
+
+    O opencode responde as duas coisas com 404, então o status sozinho não
+    diz nada — o que diz é o ``_tag`` que o servidor v2 coloca no corpo
+    (``LocationNotFoundError``). Uma rota que não existe vem com o corpo
+    **vazio**, e é aí que a degradação de verdade mora.
+    """
+
+    if not isinstance(payload, Mapping):
+        return False
+
+    return payload.get("_tag") == LOCATION_NOT_FOUND_TAG
+
+
 def _pending_ask(kind: str, item: Any, directory: str | None) -> PendingAsk | None:
     if not isinstance(item, Mapping):
         return None
@@ -247,8 +302,12 @@ def pending_forms(
 ) -> list[PendingAsk] | None:
     """Formulários pendentes de um projeto.
 
-    ``None`` quando a rota não existe (servidor antigo) — que é
-    diferente de lista vazia, que quer dizer "nada esperando".
+    Três respostas, e cada uma vale uma coisa diferente:
+
+    - ``[]`` — a rota respondeu e não há nada esperando;
+    - :class:`LocationNotFound` — a rota existe, mas **este** diretório não
+      (projeto apagado que a lista ainda guarda);
+    - ``None`` — a rota não existe: degradação, servidor v1.
     """
 
     path = FORM_PATH + location_query(directory)
@@ -256,6 +315,9 @@ def pending_forms(
     status, payload = get_json(port, password, path, timeout=timeout)
 
     if status == 404:
+        if is_location_not_found(payload):
+            raise LocationNotFound(directory)
+
         return None
 
     if status != 200:
@@ -289,6 +351,9 @@ def pending_permissions(
     status, payload = get_json(port, password, path, timeout=timeout)
 
     if status == 404:
+        if is_location_not_found(payload):
+            raise LocationNotFound(directory)
+
         return None
 
     if status != 200:
@@ -321,17 +386,35 @@ def pending_asks(
     directories: Iterable[str],
     *,
     timeout: float = PENDING_TIMEOUT,
+    missing: set[str] | None = None,
 ) -> list[PendingAsk] | None:
     """Todos os pedidos pendentes dos projetos observados.
 
-    ``None`` quando alguma das rotas não existe — o sinal para o pet
-    parar de consultar e voltar ao que o stream diz.
+    ``missing`` recebe os *locations* que o servidor disse que não existem
+    mais. É preenchido no caminho, e quem o mantém é o laço de consulta
+    (petwatch.sessions.StatusPoller) — a ideia é não voltar a perguntar a
+    um diretório que não tem mais o que responder, e não investigar duas
+    vezes a mesma morte.
 
-    Um *location* que o servidor rejeita (500 para diretório que não é
-    mais um projeto, por exemplo) é **ignorado**, e não derruba a
+    ``None`` quando alguma das rotas **não existe** — o sinal para o pet
+    parar de consultar e voltar ao que o stream diz. Rota ausente é o
+    único caso que desliga o recurso, e ela se distingue pelo corpo do
+    404 (ver :func:`is_location_not_found`).
+
+    Um *location* que o servidor rejeita é **ignorado**, e não derruba a
     consulta dos outros: a lista de projetos envelhece, e um projeto
     apagado não pode fazer o pet parar de avisar sobre os que existem.
-    Se *todos* falharem, aí sim é erro — e erro mantém o estado.
+    São duas formas disso, e as duas chegam no mesmo 404:
+
+    - :class:`LocationNotFound` — a pasta não existe mais. O que não pode
+      responder é "o que está pendente aqui", e a resposta é "nada";
+    - ``HttpError`` — o servidor reclamou (500 para diretório que não é
+      mais um projeto, por exemplo). Aqui não dá para saber.
+
+    Se *todos* falharem, aí sim é erro — e erro mantém o estado. Mas um
+    *location* morto **não** conta como falha para essa conta: ele não
+    falhou, ele não existe, e um projeto apagado não pode virar "não deu
+    para saber" sobre todos os outros.
     """
 
     directories = list(directories)
@@ -346,6 +429,8 @@ def pending_asks(
 
     failed = 0
 
+    absent = 0
+
     for directory in directories:
         try:
             forms = pending_forms(port, password, directory, timeout=timeout)
@@ -359,6 +444,16 @@ def pending_asks(
             if permissions is None:
                 return None
 
+        except LocationNotFound as exc:
+            absent += 1
+
+            if missing is not None:
+                missing.add(str(exc))
+
+            log.debug("[pet] location %s não existe mais", exc)
+
+            continue
+
         except (HttpError, OSError) as exc:
             failed += 1
 
@@ -369,7 +464,12 @@ def pending_asks(
         asks.extend(forms)
         asks.extend(permissions)
 
-    if failed == len(directories):
+    if failed and failed + absent == len(directories):
+        # Nenhum location respondeu e pelo menos um falhou de verdade. Se
+        # todos estão apenas ausentes (``failed == 0``), o bloco nem entra
+        # e o resultado é a lista vazia: eles não existem, então não há
+        # nada esperando neles. Já um erro é "não deu para saber", e erro
+        # mantém o estado em vez de inventar que nada está pendente.
         raise HttpError("nenhum location respondeu")
 
     return asks

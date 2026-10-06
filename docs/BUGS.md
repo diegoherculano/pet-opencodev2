@@ -506,3 +506,309 @@ v2 de verdade revelaram: um *location* que não é um projeto responde
 projeto apagado da lista calaria o pet inteiro — então `pending_asks`
 isola a falha por *location* e só trata como erro quando nenhum responde.
 
+
+### 20. "Thinking" com a pergunta aberta na tela
+
+Sintoma reportado depois do bug 18: o opencode fazia uma pergunta — a janela
+parava nela, esperando o usuário — e o pet ficava dizendo "Thinking".
+NÃO era o evento da pergunta, e não era o fim de turno: eram **três defeitos
+que só apareciam juntos**, e cada um escondia o próximo.
+
+**Um projeto morto desligava o "aguardando" inteiro.** O servidor v2
+responde **404 por duas coisas diferentes**, e o status não distingue
+nenhuma:
+
+```
+$ curl -i .../api/form?location\[directory\]=/projetos/que-nao-existe
+HTTP/1.1 404 Not Found
+content-type: application/json
+
+{"_tag":"LocationNotFoundError","location":{...},"message":"Location not found: ..."}
+
+$ curl -i .../api/formXYZ
+HTTP/1.1 404 Not Found
+                       # corpo vazio — a rota não existe
+```
+
+`GET /api/project` guarda diretórios que já não têm pasta, e
+`/projetos/que-nao-existe` estava na lista da máquina onde o bug foi
+achado. `pending_asks` tratava qualquer 404 como "servidor v1, sem a
+rota" e devolvia `None` — que significa *degradação*. Então:
+
+```
+>>> pending_asks(49374, senha, watched_directories(...))
+None          # degradação: o recurso inteiro desligado
+```
+
+A distinção agora é o `_tag` do corpo (`pending.is_location_not_found`): a
+rota ausente vem com o corpo **vazio**, e o *location* morto vem com
+`LocationNotFoundError`. O segundo é isolado como já era o 500 — o
+diretório não tem nada pendente, e os outros continuam sendo consultados.
+
+**A degradação que sobrou tinha um defeito próprio.** Com o recurso
+desligado, quem decide "aguardando" é a trava do stream — e a trava era um
+booleano global, exatamente o defeito do bug 15, que só não aparecia
+porque a degradação nunca acontecia de verdade:
+
+```
+>>> b.note_ask()                          # form.created
+>>> b.state
+'waiting'
+>>> b.note_event("ses_outra_aba", "idle")  # fim de turno de OUTRA aba
+>>> b.state
+'working'                                  # <-- a pergunta continua aberta
+```
+
+O stream é global (*"across all server locations"*), então o
+`session.idle` de uma aba não diz nada sobre a pergunta de outra. A trava
+agora guarda **de quem** foi o pedido (`SessionBoard._latched`), e o
+`monitor` extrai o `sessionID` uma vez e o entrega em `ask_seen` e no
+`released` novo. Um pedido sem dono continua valendo — ele não tem a qual
+balão se atribuir, então só mexe no sprite.
+
+**O sprite e o balão discordavam.** `app._cards()` decidia sozinha quando
+pintar "Waiting", usando `needs_action`, que só o servidor preenche. Na
+degradação o quadro dizia "esperando" e o balão dizia "Thinking": o
+primeiro mudava, o segundo não. A regra mora agora em
+`SessionBoard.cards()` e a interface só desenha o que o quadro arbitrou.
+
+Verificado contra o servidor 2.0.23 rodando, com o projeto morto na lista:
+
+| | antes | depois |
+| --- | --- | --- |
+| `pending_asks` com 8 projetos | `None` (degradação) | `[]` |
+| `session.idle` de outra aba, degradado | `working` | `waiting` |
+| balão da aba que perguntou, degradado | `thinking` | `waiting` |
+| projetos mortos reconsultados | 2 GETs a cada ciclo | 0 (lembrados) |
+
+Um *location* morto é anotado (`StatusPoller._missing`) e sai da varredura
+— reconsultá-lo a cada ciclo são dois GETs para sempre. A lista de projetos
+é relida no TTL, então um diretório que reaparecer é pego de volta sem
+reiniciar o pet. `PETWATCH_DIRECTORY` nunca é filtrada: ali é o usuário
+escolhendo o lugar, e o pet não discorda.
+
+O aviso de degradação também subiu de `INFO` para `WARNING`: ele estava no
+log desde o primeiro bug 18, e em `--foreground` — que é onde o log é
+lido — ele é a pista de que o balão pode atrasar.
+
+Coberto por `tests/test_pending.py` (`LocationNotFoundTagTests`,
+`PendingAsksTests`), `tests/test_sessions.py` (`DegradedTests`,
+`Bug20DeadLocationTests`), `tests/test_idle.py` (`PendingQuestionTests`) e
+`tests/test_app.py` (`CardTests`), que é onde o sintoma era visto.
+
+### 21. "Thinking" para sempre, com o agente parado
+
+Sintoma reportado: *"sempre que eu entro com o pet, me parece que ele trava a
+comunicação do opencode e preciso falar com o agente para continuar de onde
+parou, mas ele fica no modo como se tivesse pensando mas parece parado"*.
+
+**Não é o pet que trava o opencode.** Isso foi medido antes de qualquer
+mudança, e o resultado importa porque é o que descartou a hipótese mais
+óbvia:
+
+| medição, contra o servidor real | resultado |
+| --- | --- |
+| latência de `/api/session/active` com o pet rodando | 0,5–1,2 ms |
+| 1200 GETs do pet em sequência | 2201 req/s, `active` **inalterado** |
+| 40 assinantes de `/api/event` simultâneos | assinante anterior **não** caiu |
+| 60 assinaturas de `/api/event` abertas e **descartadas** sem ler (o que o monitor faz a cada reconexão) | observador **continuou** recebendo, maior silêncio 5,47 s |
+| stream do observador durante 90 s de monitor + poller reais | **1** conexão, **0** exceções, nada perdido |
+
+O pet só faz `GET`, e nenhuma delas tem efeito colateral. A comunicação do
+opencode não é bloqueada por ele.
+
+**O que trava é o balão, não o opencode.** O agente de fato congela — e o
+`opencode.log` mostra por quê: `Failed to drain Session`, o *drain* da
+sessão morre. Aí o servidor **continua listando a sessão** em
+`/api/session/active` como `running`, e nenhuma requisição volta a mexer
+nisso. Medido: uma sessão ficou 90 s na lista de ativas com **nenhum evento
+no stream**.
+
+E o pet tratava essa sessão como trabalhando para sempre. **Duas falhas
+independentes**, e cada uma sozinha bastava:
+
+**1. `demote_stale` media o relógio errado.** Ele comparava
+`Instance.touched_at` com o prazo, e `touched_at` é reescrito por
+`note_active` **a cada ciclo** do `StatusPoller` (2 s a 20 s):
+
+```
+>>> b.note_active([SID])          # touched_at = 1.0
+>>> for _ in range(90): b.tick(); b.demote_stale(45)
+...  # 90 ciclos: touched_at = agora, sempre. prazo nunca alcançado.
+```
+
+`touched_at` media "o servidor ainda lista esta sessão", que é justamente o
+que **não** prova que ela está trabalhando. Agora existe
+`Instance.evented_at`, que só o stream move — `note_event` o atualiza, e
+`note_active` o inicializa no momento em que promove a instância de
+`connecting` para `working`. Esse último detalhe é o que cobre a sessão que
+trava **antes** do primeiro evento: sem ele o relógio nunca começaria, e
+`demote_stale` a leria como "ainda não falou" para sempre.
+
+**2. `demote_stale` só rodava por trás do watchdog global.** A única chamada
+era `app.on_watchdog_idle`, e o watchdog global exige `IDLE_TIMEOUT` de
+silêncio **do servidor inteiro**. Com outra aba do opencode trabalhando — o
+uso normal, várias abas abertas — `note_activity` chega o tempo todo e ele
+**nunca dispara**:
+
+```
+=== com outra aba ativa, antes da correção ===
+  t= 120.0s  pet='working'  aba travada='working'
+  t= 300.0s  pet='working'  aba travada='working'   <- 300 s, e contando
+  idle_reached disparou: []
+```
+
+Agora `on_active` também envelhece o balão, que é o lugar natural: é a
+consulta de ativas que descobre que a instância continua listada, então é
+ela que pode conferir que a instância de fato calou.
+
+O efeito, na mesma simulação, com a outra aba realmente ativa:
+
+| | antes | depois |
+| --- | --- | --- |
+| aba travada, 300 s depois | `working` | `idle` |
+| aba que trabalha, 300 s depois | `working` | `working` |
+
+O contra-teste importa mais que o teste: `test_a_session_that_keeps_working_is_not_released_by_the_poll`
+e `test_a_session_that_keeps_speaking_stays_working` garantem que o poll não
+rebaixe quem está trabalhando de verdade — senão a correção trocaria "Thinking
+eterno" por "Ready" falso, que é o defeito do bug 11 de outro jeito.
+
+Uma nota sobre o que **não** se mexeu: `demote_stale` pulando
+`self._wants(instance)` continua valendo. Uma instância esperando resposta
+não "calou" — está esperando o usuário, e o `waiting` continua certo, mesmo
+que o silêncio passe de 45 s.
+
+Coberto por `tests/test_sessions.py` (`DemoteStaleTests`, quatro casos) e
+`tests/test_app.py` (`WiringTests`, dois). Verificado que os seis falham com
+cada metade da correção revertida.
+
+### 22. "Ready" no meio do trabalho
+
+Sintoma reportado, e o **oposto** do bug 21: o agente estava pensando e o
+balão dizia "Ready / waiting for you". O que corrigiu o 21 — rebaixar a
+instância que calou, com `demote_stale` rodando a cada consulta de ativas —
+passou a derrubar trabalho real.
+
+**O relógio de silêncio media a coisa errada.** `Instance.evented_at` só era
+movido por `note_event`, e `note_event` só era chamado quando o evento **vira
+estado** *e* traz `sessionID`. Medindo o stream de verdade num turno real de
+150 s, esse recorte cobre quase nada:
+
+```
+=== tipos mais frequentes, 819 eventos em 150s ===
+   771  session.reasoning.delta   sessionID=771   estado={None}
+     9  session.text.delta        sessionID=  9   estado={None}
+     3  shell.created             sessionID=  0   estado={'working'}
+     3  shell.exited              sessionID=  0   estado={'working'}
+     3  session.tool.called       sessionID=  3   estado={'working'}
+```
+
+Duas das três condições falhavam ao mesmo tempo:
+
+1. **94% do stream não vira estado.** `session.reasoning.delta` é um
+   instante interno do turno — por desenho ele não pode virar estado, ou o
+   balão pisca — e ainda assim é a maior parte de tudo que o opencode emite.
+   É o agente pensando, e é o que mais dura.
+2. **Os eventos de arquivo e shell não têm `sessionID`.** O *schema* do
+   opencode confirma, e o stream capturado também:
+
+   ```
+   {"type": "shell.created", "location": {"directory": "/tmp/opencode"},
+    "data": {"info": {"id": "sh_…", "command": "sleep 1", …}}}    # sem sessionID
+   {"type": "shell.exited",  "location": {"directory": "/tmp/opencode"},
+    "data": {"id": "sh_…", "exit": 0, "status": "exited"}}          # sem sessionID
+   ```
+
+   O dono deles é o *location*, e ele está no **envelope** — o que o
+   `extract_session_id` nunca lia, porque ele desce para `data`.
+
+3. **O carimbo vinha do relógio errado.** `note_event` gravava `self._now`, e
+   `self._now` só anda quando a consulta de status passa. Isso não encurta o
+   timeout para 25 s — o carimbo anda no tique do poll, então ele só o
+   **torna impreciso**: varrendo a fase do último evento dentro do ciclo, o
+   silêncio real que derruba o balão vai de **40 s a 60 s** em vez dos 45 s
+   que o número significa. Medido:
+
+   ```
+   carimbo no relógio do poll : de 40s a 60s
+   carimbo no relógio real    : de 46s a 65s
+   ```
+
+   É o segundo defeito, e sozinho ele não produz o sintoma: os 39,06 s que o
+   projeto mediu para calibrar o timeout continuam acima do pior caso. Ele
+   importa porque o timeout deixa de ser um número, e é o número que foi
+   medido.
+
+**A segunda metade: o rebaixamento era permanente.** `note_active` só promove
+a partir de `STATE_CONNECTING`, então uma vez em `STATE_IDLE` por inferência
+de silêncio, **nada** trazia a instância de volta. O balão ficava em "Ready"
+pelo resto do turno, mesmo com o agente trabalhando o tempo todo:
+
+```
+-- antes --
+  t= 41.0s  pet=working   baloes=[('working', 'Taxr', False)]
+  t= 51.0s  pet=idle      baloes=[('idle', 'Taxr', False)]     <- o agente segue pensando
+  t= 71.0s  pet=idle      baloes=[('idle', 'Taxr', False)]
+  stream_state='working'
+```
+
+**A correção** separa *prova de vida* de *estado*, porque são coisas
+diferentes:
+
+- `monitor.session_alive` publica **todo** evento, com `(sessionID,
+  diretório)`. Sai antes das regras, porque prova de vida não pode depender
+  da tradução do evento.
+- `events.extract_location_directory` lê o `location` do envelope, que dá
+  dono aos eventos que não trazem `sessionID`.
+- `SessionBoard.note_alive` move o relógio, e **não** muda estado.
+- O carimbo passa a ser `self._clock()` (tempo real) em vez de `self._now`
+  (tempo do último poll), para o timeout voltar a ser um número só.
+- `Instance.demoted` marca que o "pronto" foi um palpite nosso, e
+  `note_alive` o desfaz no primeiro evento. O "pronto" que o **servidor**
+  disse (`session.idle`) não é desfazível por um delta.
+
+Quando duas instâncias dividem um *location*, as duas contam como vivas: um
+evento de arquivo não diz qual das abas do projeto escreveu o arquivo, e errar
+para "Thinking" é melhor do que errar para "Ready" no meio do trabalho.
+
+```
+-- depois --
+  80s com o agente produzindo : ['working'] × 8
+  80s de silêncio real        : ['working','working','working','working',
+                                 'idle','idle','idle','idle']
+  ao falar de novo            : working   (o palpite foi desfeito)
+  shell.created (sem sessão)  : working   (dono pelo location)
+```
+
+O silêncio de verdade continua voltando para "Ready" — a correção do bug 21
+segue valendo, e o simetrico é testado.
+
+Uma nota sobre o que **não** mudou: o `IDLE_TIMEOUT` continua 45 s. Com o
+carimbo certo ele volta a valer o que foi medido, e reduzir agora seria trocar
+uma medição por um palpite.
+
+**O turno que medi não chega a derrubar o balão, e é por isso que ele está
+aqui como número e não como reprodução.** Com 832 eventos em 179,6 s, a maior
+lacuna entre eventos *de estado* foi de 40,16 s — e o orçamento sem a correção
+era de até 60 s. A simulação só mostra a queda quando o raciocínio passa de
+~60 s:
+
+```
+  pensando por      sem a correção      com a correção
+          45s             não cai             não cai
+          60s          cai em 60s             não cai
+         120s          cai em 60s             não cai
+         200s          cai em 60s             não cai
+```
+
+O sintoma reportado é justamente esse: raciocínio longo. E com duas abas
+abertas — o uso normal — o *sprite* ainda segura "Thinking" (ele soma as
+instâncias), então o defeito aparece **por balão**, o que é onde o usuário
+lê.
+
+Coberto por `tests/test_sessions.py` (`NoteAliveTests`, sete casos;
+`DemotedIsRevocableTests`, cinco; `NeverSpokeTests`, dois),
+`tests/test_idle.py` (`SessionAliveTests`, cinco),
+`tests/test_events.py` (`ExtractLocationDirectoryTests`, quatro) e
+`tests/test_app.py` (`WiringTests`, três), que é onde o sintoma era visto.

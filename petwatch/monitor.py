@@ -12,9 +12,15 @@ imediatamente e a thread terminar. Sem isso ``shutdown()`` estoura o
 **O que o stream não decide.** A documentação v2 avisa que ``/api/event``
 é *"volatile by contract: ... events during disconnection are missed"* e
 que traz eventos *"across all server locations"*. Por isso este módulo
-não publica "aguardando": ele publica :attr:`ask_seen`, que serve para
-acordar a consulta de pendência do :mod:`petwatch.pending`. Um
-``form.created`` é o **gatilho** de uma checagem, não o estado.
+não publica "aguardando": ele publica :attr:`ask_seen` e
+:attr:`released`, que servem para acordar a consulta de pendência do
+:mod:`petwatch.pending`. Um ``form.created`` é o **gatilho** de uma
+checagem, não o estado.
+
+Os dois carregam o ``sessionID`` do pedido. O stream é global, então o
+``form.created`` de uma aba e o ``session.idle`` de outra são eventos de
+abas diferentes; sem dono, a espera que eles desenham não tem de quem ser, e
+qualquer evento de qualquer aba a derruba. Ver o bug 20 em ``docs/BUGS.md``.
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from .discovery import (
     open_event_stream,
 )
 from .events import (
+    extract_location_directory,
     extract_session_id,
     is_ask_event,
     is_release_event,
@@ -52,10 +59,15 @@ class OpenCodeMonitor(QObject):
     #: usa para contar o tempo de atividade.
     activity = Signal()
 
-    #: O opencode pediu algo (permissão ou formulário) ou respondeu a um
-    #: pedido. Não é estado: é o aviso de que a consulta de pendência
-    #: precisa rodar agora. Ver :mod:`petwatch.sessions`.
-    ask_seen = Signal()
+    #: O opencode pediu algo (permissão ou formulário). Não é estado: é o
+    #: aviso de que a consulta de pendência precisa rodar agora, e de que
+    #: uma espera começou. Carrega o ``sessionID`` do pedido — ou ``None``
+    #: quando o evento não diz de quem é. Ver :mod:`petwatch.sessions`.
+    ask_seen = Signal(object)
+
+    #: O opencode respondeu a um pedido. Mesmo formato de
+    #: :attr:`ask_seen`: quem respondeu, ou ``None``.
+    released = Signal(object)
 
     #: O stream (re)conectou. Também pede uma consulta: o que aconteceu
     #: durante a queda ninguém sabe, porque o stream é volátil por
@@ -67,6 +79,24 @@ class OpenCodeMonitor(QObject):
     #: evento sem dono (``server.connected``, ``project.updated``), que
     #: não cria balão nenhum.
     session_event = Signal(str, object)
+
+    #: **Todo** evento do stream, com o dono que ele tiver:
+    #: ``(sessionID|None, diretório|None)``.
+    #:
+    #: Este sinal é a prova de vida, e é separado do
+    #: :attr:`session_event` por um motivo medido: num turno real de 150s
+    #: chegaram 819 eventos e **771 deles eram
+    #: ``session.reasoning.delta``** — que não vira estado porque é um
+    #: instante interno do turno. Publicar só o que vira estado deixava o
+    #: relógio de silêncio de :class:`~petwatch.sessions.SessionBoard`
+    #: congelado durante o raciocínio inteiro, e o balão caía para "Ready"
+    #: com o agente pensando (bug 22).
+    #:
+    #: O segundo campo existe porque nem todo evento traz ``sessionID``:
+    #: ``shell.created``, ``shell.exited`` e ``file.edited`` são do
+    #: *location*, e o envelope traz o diretório — ver
+    #: :func:`petwatch.events.extract_location_directory`.
+    session_alive = Signal(object, object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -102,6 +132,13 @@ class OpenCodeMonitor(QObject):
         muda o estado prova que o opencode está ativo, e é isso que
         segura o watchdog.
 
+        A prova de vida por sessão sai logo depois, com **todo** evento:
+        ``session.reasoning.delta`` e ``session.text.delta`` são a maior
+        parte do stream e nenhum dos dois vira estado, mas os dois dizem
+        que aquela sessão está viva. Publicar só o que vira estado media
+        o trabalho errado e produzia "Ready" no meio do raciocínio
+        (bug 22).
+
         O estado só é emitido quando muda de verdade — durante um turno
         chegam dezenas de eventos ``working`` seguidos, e repetir o sinal
         encheria o log sem acrescentar informação. O watchdog continua
@@ -114,20 +151,31 @@ class OpenCodeMonitor(QObject):
         nenhum balão.
 
         Pedido e resposta não viram estado aqui: eles disparam
-        :attr:`ask_seen`, e quem diz se o pet está esperando o usuário é
-        a consulta ao servidor.
+        :attr:`ask_seen` e :attr:`released`, e quem diz se o pet está
+        esperando o usuário é a consulta ao servidor.
+
+        O ``sessionID`` é extraído uma vez só e serve aos três sinais. Ele
+        importa porque o stream é global: um ``form.created`` de uma aba e
+        um ``session.idle`` de outra são eventos de abas diferentes, e
+        tratar os dois como "o mesmo estado global" é o bug 15.
         """
 
         self.activity.emit()
 
-        if is_ask_event(event_name, data) or is_release_event(event_name, data):
-            self.ask_seen.emit()
+        session_id = extract_session_id(data)
+
+        # Antes de qualquer regra: a prova de vida não depende do estado.
+        self.session_alive.emit(session_id, extract_location_directory(data))
+
+        if is_ask_event(event_name, data):
+            self.ask_seen.emit(session_id)
+
+        if is_release_event(event_name, data):
+            self.released.emit(session_id)
 
         state = state_from_event(event_name, data)
 
         if state:
-            session_id = extract_session_id(data)
-
             self.session_event.emit(state, session_id)
 
             self.emit_state(state)

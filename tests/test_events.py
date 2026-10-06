@@ -6,6 +6,7 @@ import unittest
 
 from petwatch.events import (
     extract_event_type,
+    extract_location_directory,
     extract_status,
     is_ask_event,
     is_release_event,
@@ -309,6 +310,77 @@ class AskTriggerTests(unittest.TestCase):
             with self.subTest(payload=payload):
                 self.assertFalse(is_ask_event(None, payload))
                 self.assertFalse(is_release_event(None, payload))
+
+
+class ExtractLocationDirectoryTests(unittest.TestCase):
+    """O *location* do envelope é o que dá dono aos eventos sem sessão.
+
+    O ``sessionID`` é o dono preciso, mas ``file.edited``,
+    ``shell.created`` e ``shell.exited`` **não o têm** — o payload deles é
+    ``{file}`` e ``{info}``, sem nenhum ``sessionID``, conferido no stream de
+    verdade. O envelope traz o diretório, e é ele que devolve o evento ao
+    projeto certo. Sem isto, a prova de vida desses eventos se perdia e o
+    balão caía para "Ready" no meio de um comando longo (bug 22).
+    """
+
+    def test_the_envelope_location_is_found(self):
+        self.assertEqual(
+            extract_location_directory({
+                "type": "shell.created",
+                "location": {"directory": "/home/diego/projetos/dd"},
+                "data": {"info": {"id": "sh_1", "command": "npm test"}},
+            }),
+            "/home/diego/projetos/dd",
+        )
+
+    def test_a_real_captured_shell_event_has_no_session_but_has_a_location(self):
+        """O formato exato do stream de verdade, byte a byte no que importa."""
+
+        captured = {
+            "id": "evt_11200a851001r6DFU8vdW7sZAJ",
+            "created": 1791303395409,
+            "type": "shell.created",
+            "location": {"directory": "/tmp/opencode"},
+            "data": {
+                "info": {
+                    "id": "sh_11200a82b001wLyfXXfM5jY7QT",
+                    "status": "running",
+                    "command": "sleep 1",
+                    "cwd": "/tmp/opencode",
+                    "shell": "/bin/bash",
+                },
+            },
+        }
+
+        # Não tem dono por sessão — é por isso que o location é necessário.
+        self.assertNotIn("sessionID", captured["data"])
+
+        self.assertEqual(
+            extract_location_directory(captured), "/tmp/opencode",
+        )
+
+    def test_the_exited_event_is_the_same_shape(self):
+        self.assertEqual(
+            extract_location_directory({
+                "type": "shell.exited",
+                "location": {"directory": "/tmp/opencode"},
+                "data": {"id": "sh_1", "exit": 0, "status": "exited"},
+            }),
+            "/tmp/opencode",
+        )
+
+    def test_absent_or_empty_location_is_none(self):
+        for payload in (
+            {"type": "server.connected", "data": {}},
+            {"type": "file.edited", "location": {}, "data": {"file": "x"}},
+            {"type": "file.edited", "location": {"directory": ""}, "data": {}},
+            {"type": "file.edited", "data": {"file": "x"}},
+            None,
+            [],
+            "shell.created",
+        ):
+            with self.subTest(payload=payload):
+                self.assertIsNone(extract_location_directory(payload))
 
 
 if __name__ == "__main__":

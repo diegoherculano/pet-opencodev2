@@ -66,7 +66,7 @@ python pet.py --foreground # colado no terminal (aqui o Ctrl+C funciona)
 
 - [`docs/OPERATION.md`](docs/OPERATION.md) — segundo plano, menu, prefs, log
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — pipeline, eventos, watchdog, sprites
-- [`docs/TESTING.md`](docs/TESTING.md) — a suíte de 478 testes
+- [`docs/TESTING.md`](docs/TESTING.md) — a suíte de 572 testes
 - [`docs/BUGS.md`](docs/BUGS.md) — histórico de bugs corrigidos
 - [`CHANGELOG.md`](CHANGELOG.md) — mudanças por versão
 
