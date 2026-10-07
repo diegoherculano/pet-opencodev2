@@ -75,21 +75,19 @@ petwatch.exe --stop
 ### O .exe
 
 ```powershell
-py -3 -m pip install pyinstaller
-py -3 -m PyInstaller petwatch.spec --noconfirm
+py -3 -m pip install -e ".[build]"
+py -3 -m PyInstaller petwatch.spec --noconfirm   # -> dist\petwatch.exe
 ```
 
-O build **precisa rodar no Windows**: o PyInstaller não faz cross-compile, e
-o bootloader do executável é o da plataforma que o construiu. De WSL dá para
-chamar o Python do Windows —
+O build **precisa rodar no Windows** — o PyInstaller não faz cross-compile, e
+o repositório precisa estar num caminho que o Windows veja. De WSL:
 
 ```bash
 powershell.exe -NoProfile -Command "py -3 -m PyInstaller petwatch.spec --noconfirm"
 ```
 
-— mas o repositório precisa estar num caminho que o Windows veja (`C:\...`, e
-não `/home/...`). O CI faz isso em `windows-latest`
-(`.github/workflows/windows.yml`).
+Passo a passo, verificação e erros comuns em [`BUILD.md`](BUILD.md); o CI
+faz esse build em `windows-latest`.
 
 O `petwatch.spec` monta um `onefile` **sem console**. Um processo solto é um
 pet de desktop: uma janela de console preta ao lado dele seria o oposto do
