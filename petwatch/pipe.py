@@ -48,6 +48,7 @@ protocolo inteiro de verdade — inclusive o caminho do cliente, que é o que
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -379,11 +380,8 @@ class PipeServer:
                     log.debug("[pet] falha atendendo %r: %s", request, exc)
 
                 if connection is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         connection.send((False, "erro"))
-
-                    except Exception:
-                        pass
 
             finally:
                 if connection is not None:

@@ -11,8 +11,9 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator
+from typing import Any
 
 log = logging.getLogger(__name__)
 

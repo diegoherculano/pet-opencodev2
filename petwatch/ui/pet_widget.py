@@ -21,7 +21,6 @@ from ..config import (
     SPRITE_MARGIN_BOTTOM,
 )
 from ..sizes import DEFAULT_SIZE_KEY, PetSize, get_size
-from .attention import AttentionPulse
 from ..states import (
     ACTION_COLOR,
     STATE_IDLE,
@@ -32,6 +31,7 @@ from ..states import (
 )
 from ..theme import PetTheme
 from . import bubble
+from .attention import AttentionPulse
 
 log = logging.getLogger(__name__)
 
@@ -206,7 +206,9 @@ class PetRenderer(QWidget):
 
         stack = shown * card_h + max(0, shown - 1) * self.size.stack_gap
 
-        return BUBBLE_TOP_MARGIN + stack + self.size.sprite_height + SPRITE_MARGIN_BOTTOM
+        return (
+            BUBBLE_TOP_MARGIN + stack + self.size.sprite_height + SPRITE_MARGIN_BOTTOM
+        )
 
     @property
     def stack_capacity(self) -> int:
@@ -523,13 +525,13 @@ class PetRenderer(QWidget):
         # dentro, que parece defeito — e o ``connecting``, justamente o
         # estado em que a janela acabou de abrir, não tem nada a dizer.
         if not any(title or subtitle for (title, subtitle), _ in
-                   zip(texts, cards)):
+                   zip(texts, cards, strict=True)):
             return
 
         rects = self.card_rects(len(cards))
 
         for ((title, subtitle), (_, _, needs_action), rect) in zip(
-            texts, cards, rects,
+            texts, cards, rects, strict=True,
         ):
             layout = bubble.paint_card(
                 painter,

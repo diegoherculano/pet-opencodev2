@@ -29,8 +29,8 @@ from pathlib import Path
 from unittest import mock
 
 from petwatch import console, discovery, pipe
-from petwatch.instance import PipeInstance, open_instance, serve_quit
 from petwatch.daemon import SingleInstance, detached_command, report_startup
+from petwatch.instance import PipeInstance, open_instance, serve_quit
 
 #: Amostra de ``ss -ltn`` no Linux. A coluna ``State`` vem antes do
 #: endereço e é o que separa escuta de conexão, e o nome do processo não
@@ -255,12 +255,11 @@ class PlatformSelectionTests(unittest.TestCase):
     def test_windows_uses_netstat(self):
         with mock.patch.object(
             discovery, "netstat_listeners", return_value=[(4096, True)]
-        ) as netstat:
-            with mock.patch.object(discovery, "ss_listeners") as ss:
-                self.assertEqual(
-                    discovery.listening_ports("win32"),
-                    [4096],
-                )
+        ) as netstat, mock.patch.object(discovery, "ss_listeners") as ss:
+            self.assertEqual(
+                discovery.listening_ports("win32"),
+                [4096],
+            )
 
         netstat.assert_called_once()
 
@@ -269,29 +268,26 @@ class PlatformSelectionTests(unittest.TestCase):
     def test_windows_does_not_touch_proc(self):
         """``/proc`` não existe, e procurar por ele seria ruído."""
 
-        with mock.patch.object(discovery, "read_proc_listeners") as proc:
-            with mock.patch.object(
-                discovery, "netstat_listeners", return_value=[]
-            ):
-                discovery.listening_ports("win32")
+        with mock.patch.object(
+            discovery, "read_proc_listeners"
+        ) as proc, mock.patch.object(discovery, "netstat_listeners", return_value=[]):
+            discovery.listening_ports("win32")
 
         proc.assert_not_called()
 
     def test_linux_prefers_proc_over_ss(self):
         with mock.patch.object(
             discovery, "read_proc_listeners", return_value=[(4096, True)]
-        ):
-            with mock.patch.object(discovery, "ss_listeners") as ss:
-                self.assertEqual(discovery.listening_ports("linux"), [4096])
+        ), mock.patch.object(discovery, "ss_listeners") as ss:
+            self.assertEqual(discovery.listening_ports("linux"), [4096])
 
         ss.assert_not_called()
 
     def test_linux_falls_back_to_ss_without_proc(self):
-        with mock.patch.object(discovery, "read_proc_listeners", return_value=[]):
-            with mock.patch.object(
-                discovery, "ss_listeners", return_value=[(22, False)]
-            ):
-                self.assertEqual(discovery.listening_ports("linux"), [22])
+        with mock.patch.object(
+            discovery, "read_proc_listeners", return_value=[]
+        ), mock.patch.object(discovery, "ss_listeners", return_value=[(22, False)]):
+            self.assertEqual(discovery.listening_ports("linux"), [22])
 
     def test_loopback_comes_before_the_rest(self):
         with mock.patch.object(
@@ -339,14 +335,15 @@ class SweepTests(unittest.TestCase):
     def test_the_last_good_port_goes_first(self):
         discovery._last_good_port = 5432
 
-        with mock.patch.object(discovery, "env_port", return_value=None):
-            with mock.patch.object(
-                discovery, "listening_ports", return_value=[22, 4096, 5432]
-            ):
-                self.assertEqual(
-                    discovery.find_opencode_ports(),
-                    [5432, 22, 4096],
-                )
+        with mock.patch.object(
+            discovery, "env_port", return_value=None
+        ), mock.patch.object(
+            discovery, "listening_ports", return_value=[22, 4096, 5432]
+        ):
+            self.assertEqual(
+                discovery.find_opencode_ports(),
+                [5432, 22, 4096],
+            )
 
     def test_the_env_var_overrides_everything(self):
         discovery._last_good_port = 5432
@@ -355,14 +352,16 @@ class SweepTests(unittest.TestCase):
             self.assertEqual(discovery.find_opencode_ports(), [9999])
 
     def test_an_invalid_env_var_is_ignored_with_a_warning(self):
-        with mock.patch.dict(os.environ, {"PETWATCH_PORT": "abc"}):
-            with self.assertLogs("petwatch.discovery", level="WARNING"):
-                self.assertIsNone(discovery.env_port())
+        with mock.patch.dict(
+            os.environ, {"PETWATCH_PORT": "abc"}
+        ), self.assertLogs("petwatch.discovery", level="WARNING"):
+            self.assertIsNone(discovery.env_port())
 
     def test_a_port_out_of_range_is_refused(self):
-        with mock.patch.dict(os.environ, {"PETWATCH_PORT": "70000"}):
-            with self.assertLogs("petwatch.discovery", level="WARNING"):
-                self.assertIsNone(discovery.env_port())
+        with mock.patch.dict(
+            os.environ, {"PETWATCH_PORT": "70000"}
+        ), self.assertLogs("petwatch.discovery", level="WARNING"):
+            self.assertIsNone(discovery.env_port())
 
     def test_the_listing_is_cached(self):
         with mock.patch.object(
@@ -387,22 +386,20 @@ class SweepTests(unittest.TestCase):
 
         many = list(range(40000, 40000 + discovery.MAX_SWEEP_PORTS + 20))
 
-        with mock.patch.object(discovery, "find_opencode_ports", return_value=many):
-            with mock.patch.object(
-                discovery, "server_is_alive", return_value=False
-            ) as alive:
-                self.assertIsNone(discovery.find_opencode_server("senha"))
+        with mock.patch.object(
+            discovery, "find_opencode_ports", return_value=many
+        ), mock.patch.object(discovery, "server_is_alive", return_value=False) as alive:
+            self.assertIsNone(discovery.find_opencode_server("senha"))
 
         self.assertEqual(alive.call_count, discovery.MAX_SWEEP_PORTS)
 
     def test_the_sweep_uses_the_shorter_timeout(self):
         """Na varredura a porta é uma aposta, e aposta pede resposta rápida."""
 
-        with mock.patch.object(discovery, "find_opencode_ports", return_value=[4096]):
-            with mock.patch.object(
-                discovery, "server_is_alive", return_value=True
-            ) as alive:
-                discovery.find_opencode_server("s")
+        with mock.patch.object(
+            discovery, "find_opencode_ports", return_value=[4096]
+        ), mock.patch.object(discovery, "server_is_alive", return_value=True) as alive:
+            discovery.find_opencode_server("s")
 
         self.assertEqual(
             alive.call_args.kwargs["timeout"],
@@ -412,16 +409,16 @@ class SweepTests(unittest.TestCase):
     def test_the_first_answer_wins(self):
         with mock.patch.object(
             discovery, "find_opencode_ports", return_value=[9, 4096]
+        ), mock.patch.object(
+            discovery, "server_is_alive", side_effect=[False, True]
         ):
-            with mock.patch.object(
-                discovery, "server_is_alive", side_effect=[False, True]
-            ):
-                self.assertEqual(discovery.find_opencode_server("s"), 4096)
+            self.assertEqual(discovery.find_opencode_server("s"), 4096)
 
     def test_the_answer_is_remembered_for_the_next_sweep(self):
-        with mock.patch.object(discovery, "find_opencode_ports", return_value=[4096]):
-            with mock.patch.object(discovery, "server_is_alive", return_value=True):
-                discovery.find_opencode_server("s")
+        with mock.patch.object(
+            discovery, "find_opencode_ports", return_value=[4096]
+        ), mock.patch.object(discovery, "server_is_alive", return_value=True):
+            discovery.find_opencode_server("s")
 
         self.assertEqual(discovery._last_good_port, 4096)
 
@@ -451,9 +448,8 @@ class ContentTypeTests(unittest.TestCase):
     def alive(self, connection) -> bool:
         with mock.patch.object(
             discovery, "port_accepts_connections", return_value=True
-        ):
-            with mock.patch.object(discovery, "connect", return_value=connection):
-                return discovery.server_is_alive(4096, "senha")
+        ), mock.patch.object(discovery, "connect", return_value=connection):
+            return discovery.server_is_alive(4096, "senha")
 
     def test_a_plain_200_is_not_enough(self):
         """O sintoma seria um dev server virando "o opencode"."""
@@ -506,12 +502,13 @@ class PasswordCommandTests(unittest.TestCase):
         def which(name):
             return "C:\\bin\\opencode2.exe" if name.endswith(".exe") else None
 
-        with mock.patch.object(discovery.os, "name", "nt"):
-            with mock.patch.object(discovery.shutil, "which", side_effect=which):
-                self.assertEqual(
-                    discovery.resolve_password_command()[0],
-                    "C:\\bin\\opencode2.exe",
-                )
+        with mock.patch.object(
+            discovery.os, "name", "nt"
+        ), mock.patch.object(discovery.shutil, "which", side_effect=which):
+            self.assertEqual(
+                discovery.resolve_password_command()[0],
+                "C:\\bin\\opencode2.exe",
+            )
 
     @mock.patch.dict(os.environ, {}, clear=False)
     def test_a_cmd_fallback_is_found(self):
@@ -521,12 +518,13 @@ class PasswordCommandTests(unittest.TestCase):
         def which(name):
             return "C:\\bin\\opencode2.cmd" if name.endswith(".cmd") else None
 
-        with mock.patch.object(discovery.os, "name", "nt"):
-            with mock.patch.object(discovery.shutil, "which", side_effect=which):
-                self.assertEqual(
-                    discovery.resolve_password_command()[0],
-                    "C:\\bin\\opencode2.cmd",
-                )
+        with mock.patch.object(
+            discovery.os, "name", "nt"
+        ), mock.patch.object(discovery.shutil, "which", side_effect=which):
+            self.assertEqual(
+                discovery.resolve_password_command()[0],
+                "C:\\bin\\opencode2.cmd",
+            )
 
 
 # ------------------------------------------------------------
@@ -644,7 +642,7 @@ class PipeProtocolTests(unittest.TestCase):
         )
 
     def test_the_server_sees_the_request(self):
-        server = self.server(lambda request: (True, request))
+        self.server(lambda request: (True, request))
 
         reply = pipe.ask(
             "stop",
@@ -669,16 +667,17 @@ class PipeProtocolTests(unittest.TestCase):
         )
 
     def test_a_server_without_a_key_does_not_start(self):
-        with mock.patch.object(pipe, "ensure_authkey", return_value=None):
-            with self.assertLogs("petwatch.pipe", level="WARNING"):
-                server = pipe.PipeServer(
-                    lambda request: (True, None),
-                    self.address,
-                    self.family,
-                    state_dir=self.directory,
-                )
+        with mock.patch.object(
+            pipe, "ensure_authkey", return_value=None
+        ), self.assertLogs("petwatch.pipe", level="WARNING"):
+            server = pipe.PipeServer(
+                lambda request: (True, None),
+                self.address,
+                self.family,
+                state_dir=self.directory,
+            )
 
-                self.assertFalse(server.start())
+            self.assertFalse(server.start())
 
     def test_an_exception_in_the_handler_answers_error(self):
         """Um handler que estoura não pode derrubar o servidor.
@@ -850,9 +849,8 @@ class PipeInstanceTests(unittest.TestCase):
 
         with mock.patch.object(
             Path, "write_text", side_effect=OSError("sem espaço")
-        ):
-            with self.assertLogs("petwatch.instance", level="WARNING"):
-                pid = instance.record_pid()
+        ), self.assertLogs("petwatch.instance", level="WARNING"):
+            pid = instance.record_pid()
 
         self.assertEqual(pid, os.getpid())
 
@@ -924,9 +922,10 @@ class PipeInstanceStateDirTests(unittest.TestCase):
 
         instance = PipeInstance(blocker / "pet.pid", blocker.parent)
 
-        with mock.patch("petwatch.instance.ensure_state_dir"):
-            with mock.patch.object(pipe, "PipeServer", lambda *a, **k: _Fake()):
-                self.assertTrue(instance.claim())
+        with mock.patch(
+            "petwatch.instance.ensure_state_dir"
+        ), mock.patch.object(pipe, "PipeServer", lambda *a, **k: _Fake()):
+            self.assertTrue(instance.claim())
 
         instance.release()
 
@@ -1069,12 +1068,13 @@ class DetachedCommandTests(unittest.TestCase):
     def test_a_frozen_app_reruns_the_executable(self):
         """Numa instalação congelada quem chama é o próprio ``.exe``."""
 
-        with mock.patch.object(sys, "frozen", True, create=True):
-            with mock.patch.object(sys, "executable", "C:\\Pet\\petwatch.exe"):
-                self.assertEqual(
-                    detached_command(),
-                    ["C:\\Pet\\petwatch.exe", "--child"],
-                )
+        with mock.patch.object(
+            sys, "frozen", True, create=True
+        ), mock.patch.object(sys, "executable", "C:\\Pet\\petwatch.exe"):
+            self.assertEqual(
+                detached_command(),
+                ["C:\\Pet\\petwatch.exe", "--child"],
+            )
 
     def test_a_normal_installation_reruns_pet_py(self):
         command = detached_command()
@@ -1128,9 +1128,10 @@ class ConsoleTests(unittest.TestCase):
 
         complained = io.StringIO()
 
-        with contextlib.redirect_stdout(said):
-            with contextlib.redirect_stderr(complained):
-                console.say("falhou", error=True)
+        with contextlib.redirect_stdout(
+            said
+        ), contextlib.redirect_stderr(complained):
+            console.say("falhou", error=True)
 
         self.assertEqual(complained.getvalue().strip(), "falhou")
         self.assertEqual(said.getvalue(), "")
@@ -1141,19 +1142,22 @@ class ConsoleTests(unittest.TestCase):
         import contextlib
         import io
 
-        with contextlib.redirect_stdout(io.StringIO()):
-            with mock.patch.object(console, "_message_box") as box:
-                console.say("oi", popup=True)
+        with contextlib.redirect_stdout(
+            io.StringIO()
+        ), mock.patch.object(console, "_message_box") as box:
+            console.say("oi", popup=True)
 
         box.assert_not_called()
 
     def test_the_popup_is_shown_without_a_console(self):
         """O duplo clique não tem terminal: a caixa é a resposta."""
 
-        with mock.patch.object(sys, "stdout", None):
-            with mock.patch.object(console, "IS_WINDOWS", True):
-                with mock.patch.object(console, "_message_box") as box:
-                    console.say("encerrado", popup=True)
+        with mock.patch.object(
+            sys, "stdout", None
+        ), mock.patch.object(
+            console, "IS_WINDOWS", True
+        ), mock.patch.object(console, "_message_box") as box:
+            console.say("encerrado", popup=True)
 
         box.assert_called_once()
 
@@ -1162,20 +1166,24 @@ class ConsoleTests(unittest.TestCase):
     def test_the_popup_does_not_happen_off_windows(self):
         """No Linux não há MessageBox, e o terminal já responde."""
 
-        with mock.patch.object(sys, "stdout", None):
-            with mock.patch.object(console, "IS_WINDOWS", False):
-                with mock.patch.object(console, "_message_box") as box:
-                    console.say("encerrado", popup=True)
+        with mock.patch.object(
+            sys, "stdout", None
+        ), mock.patch.object(
+            console, "IS_WINDOWS", False
+        ), mock.patch.object(console, "_message_box") as box:
+            console.say("encerrado", popup=True)
 
         box.assert_not_called()
 
     def test_a_broken_popup_does_not_raise(self):
-        with mock.patch.object(sys, "stdout", None):
-            with mock.patch.object(console, "IS_WINDOWS", True):
-                with mock.patch.object(
-                    console, "_message_box", side_effect=OSError("sem display")
-                ):
-                    console.say("oi", popup=True)
+        with mock.patch.object(
+            sys, "stdout", None
+        ), mock.patch.object(
+            console, "IS_WINDOWS", True
+        ), mock.patch.object(
+            console, "_message_box", side_effect=OSError("sem display")
+        ):
+            console.say("oi", popup=True)
 
     def test_a_closed_stdout_is_not_a_traceback(self):
         import contextlib
@@ -1235,7 +1243,6 @@ class LoggingTests(unittest.TestCase):
         self.assertIn("no log", self.path.read_text(encoding="utf-8"))
 
     def test_with_stderr_the_stream_is_used(self):
-        import contextlib
         import io
 
         stream = io.StringIO()
@@ -1266,9 +1273,10 @@ class LoggingTests(unittest.TestCase):
 
         blocker.write_text("sou um arquivo", encoding="utf-8")
 
-        with mock.patch.object(sys, "stderr", None):
-            with self.assertLogs("petwatch.console", level="WARNING"):
-                console.configure_logging(log_path=blocker / "pet.log")
+        with mock.patch.object(
+            sys, "stderr", None
+        ), self.assertLogs("petwatch.console", level="WARNING"):
+            console.configure_logging(log_path=blocker / "pet.log")
 
 
 class QuitSignalTests(unittest.TestCase):

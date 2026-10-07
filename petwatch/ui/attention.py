@@ -19,12 +19,12 @@ import logging
 
 from PySide6.QtCore import (
     Property,
+    QEasingCurve,
     QObject,
     QPropertyAnimation,
     QRect,
-    QTimer,
-    QEasingCurve,
     Qt,
+    QTimer,
     Signal,
 )
 

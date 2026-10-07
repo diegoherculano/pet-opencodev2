@@ -12,8 +12,8 @@ from PySide6.QtCore import (  # noqa: E402
     QEvent,
     QObject,
     QPoint,
-    QTimer,
     Qt,
+    QTimer,
 )
 from PySide6.QtGui import QFontMetrics  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
@@ -35,8 +35,10 @@ from petwatch.states import (  # noqa: E402
     labels_for,
 )
 from petwatch.theme import load_theme  # noqa: E402
-from petwatch.ui import PetRenderer  # noqa: E402
-from petwatch.ui import bubble  # noqa: E402
+from petwatch.ui import (  # noqa: E402
+    PetRenderer,  # noqa: E402
+    bubble,  # noqa: E402
+)
 
 # O preset "medio" e o tamanho de referencia dos testes de geometria.
 MEDIUM = PET_SIZES["medium"]
@@ -667,7 +669,7 @@ class RepaintTests(unittest.TestCase):
                 self.widget.attention.set_progress(0.0)
 
                 repaints = []
-                self.widget.update = lambda: repaints.append(True)
+                self.widget.update = lambda r=repaints: r.append(True)
 
                 self.widget.animate()
 
@@ -768,7 +770,7 @@ class CardStackTests(unittest.TestCase):
 
         rects = self.widget.card_rects(3)
 
-        for previous, current in zip(rects, rects[1:]):
+        for previous, current in zip(rects, rects[1:], strict=False):
             self.assertEqual(current.top() - previous.bottom() - 1,
                              self.widget.size.stack_gap)
 
@@ -888,8 +890,10 @@ class CardStackTests(unittest.TestCase):
                     self.assertGreaterEqual(rect.left(), 0)
                     self.assertLessEqual(rect.right(), self.widget.width())
                     self.assertGreaterEqual(rect.top(), BUBBLE_TOP_MARGIN)
-                    self.assertLess(rect.bottom(),
-                                    self.widget.height() - self.widget.size.sprite_height)
+                    self.assertLess(
+                        rect.bottom(),
+                        self.widget.height() - self.widget.size.sprite_height,
+                    )
 
     # ------------------------------------------------------------
     # Texto reticado
@@ -951,7 +955,9 @@ class CardStackTests(unittest.TestCase):
             != short.pixelColor(x, y).alpha()
         ]
 
-        self.assertEqual(outside, [], f"texto mudou pixels fora do balão: {outside[:5]}")
+        self.assertEqual(
+            outside, [], f"texto mudou pixels fora do balão: {outside[:5]}"
+        )
 
     def test_the_long_name_is_cut_inside_the_bubble(self):
         """O corte acontece: a linha do nome fica cheia, e não maior que a caixa.
@@ -1036,7 +1042,6 @@ class CardStackTests(unittest.TestCase):
     def test_only_the_flagged_card_is_colored(self):
         """Numa pilha, a cor precisa dizer *qual* balão espera resposta."""
 
-        from petwatch.states import ACTION_COLOR
 
         self.widget.set_cards([
             (STATE_WAITING, "espera", True),
@@ -1085,7 +1090,11 @@ class CardStackTests(unittest.TestCase):
         def luminance(channel: int) -> float:
             value = channel / 255
 
-            return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+            return (
+                value / 12.92
+                if value <= 0.03928
+                else ((value + 0.055) / 1.055) ** 2.4
+            )
 
         def relative(pixel: QColor) -> float:
             return (

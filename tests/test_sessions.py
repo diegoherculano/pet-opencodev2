@@ -1016,16 +1016,20 @@ class Bug20DeadLocationTests(unittest.TestCase):
             kwargs.get("missing", set()).add("/projetos/morto")
             return []
 
-        with unittest.mock.patch.object(sessions, "watched_directory", lambda: None):
-            with unittest.mock.patch.object(
-                sessions, "watched_directories",
+        with (
+            unittest.mock.patch.object(sessions, "watched_directory", lambda: None),
+            unittest.mock.patch.object(
+                sessions,
+                "watched_directories",
                 return_value=["/projetos/morto", "/projetos/dd"],
-            ):
-                with unittest.mock.patch.object(sessions, "active_sessions",
-                                                lambda *a, **k: []):
-                    with unittest.mock.patch.object(sessions, "pending_asks", query):
-                        poller._cycle(fast=False)
-                        poller._cycle(fast=False)
+            ),
+            unittest.mock.patch.object(
+                sessions, "active_sessions", lambda *a, **k: []
+            ),
+            unittest.mock.patch.object(sessions, "pending_asks", query),
+        ):
+            poller._cycle(fast=False)
+            poller._cycle(fast=False)
 
         self.assertEqual(calls[0], ("/projetos/morto", "/projetos/dd"))
         self.assertEqual(calls[1], ("/projetos/dd",))
@@ -1037,24 +1041,28 @@ class Bug20DeadLocationTests(unittest.TestCase):
 
         projects = ["/projetos/morto"]
 
-        with unittest.mock.patch.object(sessions, "watched_directory", lambda: None):
-            with unittest.mock.patch.object(
-                sessions, "watched_directories",
+        with (
+            unittest.mock.patch.object(sessions, "watched_directory", lambda: None),
+            unittest.mock.patch.object(
+                sessions,
+                "watched_directories",
                 side_effect=lambda *a, **k: list(projects),
-            ):
-                # Primeira leitura: a lista entra no cache.
-                self.assertEqual(poller._directories(PORT, "s", fast=False),
-                                 projects)
+            ),
+        ):
+            # Primeira leitura: a lista entra no cache.
+            self.assertEqual(
+                poller._directories(PORT, "s", fast=False), projects
+            )
 
-                poller._missing.add("/projetos/morto")
+            poller._missing.add("/projetos/morto")
 
-                # Com a lista em cache, o julgamento anterior vale.
-                self.assertEqual(poller._directories(PORT, "s", fast=False), [])
+            # Com a lista em cache, o julgamento anterior vale.
+            self.assertEqual(poller._directories(PORT, "s", fast=False), [])
 
-                # Passado o TTL, a lista é relida e o julgamento refeito.
-                poller._projects_read_at = 0.0
+            # Passado o TTL, a lista é relida e o julgamento refeito.
+            poller._projects_read_at = 0.0
 
-                queried = poller._directories(PORT, "s", fast=False)
+            queried = poller._directories(PORT, "s", fast=False)
 
         self.assertEqual(queried, ["/projetos/morto"])
         self.assertEqual(poller._missing, set())
@@ -1064,17 +1072,21 @@ class Bug20DeadLocationTests(unittest.TestCase):
 
         poller = self.build()
 
-        with unittest.mock.patch.object(sessions, "watched_directory", lambda: None):
-            with unittest.mock.patch.object(
-                sessions, "watched_directories",
+        with (
+            unittest.mock.patch.object(sessions, "watched_directory", lambda: None),
+            unittest.mock.patch.object(
+                sessions,
+                "watched_directories",
                 return_value=["/projetos/morto"],
-            ):
-                with unittest.mock.patch.object(sessions, "active_sessions",
-                                                lambda *a, **k: []):
-                    with unittest.mock.patch.object(
-                        sessions, "pending_asks", lambda *a, **k: [],
-                    ):
-                        delay = poller._cycle(fast=False)
+            ),
+            unittest.mock.patch.object(
+                sessions, "active_sessions", lambda *a, **k: []
+            ),
+            unittest.mock.patch.object(
+                sessions, "pending_asks", lambda *a, **k: [],
+            ),
+        ):
+            delay = poller._cycle(fast=False)
 
         self.assertEqual(delay, sessions.PENDING_IDLE_POLL_SECONDS)
 
@@ -1141,15 +1153,18 @@ class PollerTests(unittest.TestCase):
     def test_pending_asks_mean_a_fast_poll(self):
         poller = self.build()
 
-        with unittest.mock.patch.object(sessions, "watched_directory",
-                                        lambda: "/projetos/dd"):
-            with self.patch_pending([ask()]):
-                with self.patch_active([]):
-                    with self.no_names():
-                        seen: list[object] = []
-                        poller.answers.connect(seen.append)
+        with (
+            unittest.mock.patch.object(
+                sessions, "watched_directory", lambda: "/projetos/dd"
+            ),
+            self.patch_pending([ask()]),
+            self.patch_active([]),
+            self.no_names(),
+        ):
+            seen: list[object] = []
+            poller.answers.connect(seen.append)
 
-                        delay = poller._cycle()
+            delay = poller._cycle()
 
         self.assertTrue(seen[0])
         self.assertEqual(delay, sessions.PENDING_POLL_SECONDS)
@@ -1157,15 +1172,18 @@ class PollerTests(unittest.TestCase):
     def test_nothing_pending_means_a_slow_poll(self):
         poller = self.build()
 
-        with unittest.mock.patch.object(sessions, "watched_directory",
-                                        lambda: "/projetos/dd"):
-            with self.patch_pending([]):
-                with self.patch_active([]):
-                    with self.no_names():
-                        seen: list[object] = []
-                        poller.answers.connect(seen.append)
+        with (
+            unittest.mock.patch.object(
+                sessions, "watched_directory", lambda: "/projetos/dd"
+            ),
+            self.patch_pending([]),
+            self.patch_active([]),
+            self.no_names(),
+        ):
+            seen: list[object] = []
+            poller.answers.connect(seen.append)
 
-                        delay = poller._cycle()
+            delay = poller._cycle()
 
         self.assertEqual(seen[0], [])
         self.assertEqual(delay, sessions.PENDING_IDLE_POLL_SECONDS)
@@ -1173,18 +1191,22 @@ class PollerTests(unittest.TestCase):
     def test_a_query_error_publishes_none(self):
         poller = self.build()
 
-        with unittest.mock.patch.object(sessions, "watched_directory",
-                                        lambda: "/projetos/dd"):
-            with unittest.mock.patch.object(
-                sessions, "pending_asks",
+        with (
+            unittest.mock.patch.object(
+                sessions, "watched_directory", lambda: "/projetos/dd"
+            ),
+            unittest.mock.patch.object(
+                sessions,
+                "pending_asks",
                 unittest.mock.Mock(side_effect=OSError("boom")),
-            ):
-                with self.patch_active([]):
-                    with self.no_names():
-                        seen: list[object] = []
-                        poller.answers.connect(seen.append)
+            ),
+            self.patch_active([]),
+            self.no_names(),
+        ):
+            seen: list[object] = []
+            poller.answers.connect(seen.append)
 
-                        delay = poller._cycle()
+            delay = poller._cycle()
 
         self.assertEqual(seen, [None])
         self.assertEqual(delay, sessions.PENDING_ERROR_RETRY)
@@ -1192,12 +1214,15 @@ class PollerTests(unittest.TestCase):
     def test_an_old_server_turns_the_feature_off_once(self):
         poller = self.build()
 
-        with unittest.mock.patch.object(sessions, "watched_directory",
-                                        lambda: "/projetos/dd"):
-            with self.patch_pending(None):
-                with self.patch_active([]):
-                    with self.assertLogs("petwatch.sessions", level="WARNING"):
-                        poller._cycle()
+        with (
+            unittest.mock.patch.object(
+                sessions, "watched_directory", lambda: "/projetos/dd"
+            ),
+            self.patch_pending(None),
+            self.patch_active([]),
+            self.assertLogs("petwatch.sessions", level="WARNING"),
+        ):
+            poller._cycle()
 
         self.assertFalse(poller.supported)
 
@@ -1212,12 +1237,15 @@ class PollerTests(unittest.TestCase):
 
         poller = self.build()
 
-        with unittest.mock.patch.object(sessions, "watched_directory",
-                                        lambda: "/projetos/dd"):
-            with self.patch_pending(None):
-                with self.patch_active([]):
-                    with self.assertLogs("petwatch.sessions") as caught:
-                        poller._cycle()
+        with (
+            unittest.mock.patch.object(
+                sessions, "watched_directory", lambda: "/projetos/dd"
+            ),
+            self.patch_pending(None),
+            self.patch_active([]),
+            self.assertLogs("petwatch.sessions") as caught,
+        ):
+            poller._cycle()
 
         self.assertTrue(any(r.levelname == "WARNING" for r in caught.records))
 
@@ -1226,13 +1254,16 @@ class PollerTests(unittest.TestCase):
 
         poller = self.build()
 
-        with unittest.mock.patch.object(sessions, "watched_directory",
-                                        lambda: "/projetos/dd"):
-            with self.patch_pending(None):
-                with self.patch_active([]):
-                    with self.assertLogs("petwatch.sessions") as caught:
-                        poller._cycle()
-                        poller._cycle()
+        with (
+            unittest.mock.patch.object(
+                sessions, "watched_directory", lambda: "/projetos/dd"
+            ),
+            self.patch_pending(None),
+            self.patch_active([]),
+            self.assertLogs("petwatch.sessions") as caught,
+        ):
+            poller._cycle()
+            poller._cycle()
 
         warnings = [r for r in caught.records if r.levelname == "WARNING"]
 
@@ -1241,15 +1272,18 @@ class PollerTests(unittest.TestCase):
     def test_the_active_list_is_published(self):
         poller = self.build()
 
-        with unittest.mock.patch.object(sessions, "watched_directory",
-                                        lambda: "/projetos/dd"):
-            with self.patch_pending([]):
-                with self.patch_active(["ses_a"]):
-                    with self.no_names():
-                        seen: list[object] = []
-                        poller.active.connect(seen.append)
+        with (
+            unittest.mock.patch.object(
+                sessions, "watched_directory", lambda: "/projetos/dd"
+            ),
+            self.patch_pending([]),
+            self.patch_active(["ses_a"]),
+            self.no_names(),
+        ):
+            seen: list[object] = []
+            poller.active.connect(seen.append)
 
-                        poller._cycle()
+            poller._cycle()
 
         self.assertEqual(seen[0], ["ses_a"])
 
@@ -1258,14 +1292,17 @@ class PollerTests(unittest.TestCase):
 
         poller = self.build()
 
-        with unittest.mock.patch.object(sessions, "watched_directory",
-                                        lambda: "/projetos/dd"):
-            with self.patch_pending([]):
-                with self.patch_active(None):
-                    seen: list[object] = []
-                    poller.active.connect(seen.append)
+        with (
+            unittest.mock.patch.object(
+                sessions, "watched_directory", lambda: "/projetos/dd"
+            ),
+            self.patch_pending([]),
+            self.patch_active(None),
+        ):
+            seen: list[object] = []
+            poller.active.connect(seen.append)
 
-                    poller._cycle()
+            poller._cycle()
 
         self.assertEqual(seen, [None])
 
@@ -1279,14 +1316,16 @@ class PollerTests(unittest.TestCase):
         named: list[object] = []
         poller.named.connect(named.append)
 
-        with unittest.mock.patch.object(sessions, "session_info",
-                                        lambda *a, **k: info):
-            with unittest.mock.patch.object(sessions, "watched_directory",
-                                            lambda: "/p"):
-                with self.patch_pending([]):
-                    with self.patch_active(["ses_a"]):
-                        poller._cycle()
-                        poller._cycle()
+        with (
+            unittest.mock.patch.object(
+                sessions, "session_info", lambda *a, **k: info
+            ),
+            unittest.mock.patch.object(sessions, "watched_directory", lambda: "/p"),
+            self.patch_pending([]),
+            self.patch_active(["ses_a"]),
+        ):
+            poller._cycle()
+            poller._cycle()
 
         self.assertEqual(len(named), 1)
         self.assertEqual(named[0][0], "ses_a")
@@ -1296,13 +1335,14 @@ class PollerTests(unittest.TestCase):
 
         fetch = unittest.mock.Mock(return_value=None)
 
-        with unittest.mock.patch.object(sessions, "session_info", fetch):
-            with unittest.mock.patch.object(sessions, "watched_directory",
-                                            lambda: "/p"):
-                with self.patch_pending([]):
-                    with self.patch_active(["ses_a"]):
-                        poller._cycle()
-                        poller._cycle()
+        with (
+            unittest.mock.patch.object(sessions, "session_info", fetch),
+            unittest.mock.patch.object(sessions, "watched_directory", lambda: "/p"),
+            self.patch_pending([]),
+            self.patch_active(["ses_a"]),
+        ):
+            poller._cycle()
+            poller._cycle()
 
         # Sem nome não há o que buscar de novo, mas também não é para
         # insistir a cada 2s num GET que não volta.
@@ -1321,27 +1361,30 @@ class PollerTests(unittest.TestCase):
 
         self.addCleanup(poller.stop)
 
-        with unittest.mock.patch.object(sessions, "watched_directory",
-                                        lambda: "/p"):
-            with self.patch_pending([]):
-                with self.patch_active([]):
-                    poller._cycle()
-                    poller._cycle()
-                    poller._cycle()
+        with (
+            unittest.mock.patch.object(sessions, "watched_directory", lambda: "/p"),
+            self.patch_pending([]),
+            self.patch_active([]),
+        ):
+            poller._cycle()
+            poller._cycle()
+            poller._cycle()
 
         self.assertEqual(len(reads), 1)
 
     def test_the_project_list_is_cached(self):
         poller = self.build()
 
-        with unittest.mock.patch.object(sessions, "watched_directory", lambda: None):
-            with unittest.mock.patch.object(
+        with (
+            unittest.mock.patch.object(sessions, "watched_directory", lambda: None),
+            unittest.mock.patch.object(
                 sessions, "watched_directories", return_value=["/projetos/dd"],
-            ) as projects:
-                with self.patch_pending([]):
-                    with self.patch_active([]):
-                        poller._cycle()
-                        poller._cycle()
+            ) as projects,
+            self.patch_pending([]),
+            self.patch_active([]),
+        ):
+            poller._cycle()
+            poller._cycle()
 
         self.assertEqual(projects.call_count, 1)
 
@@ -1350,31 +1393,37 @@ class PollerTests(unittest.TestCase):
 
         poller = self.build()
 
-        with unittest.mock.patch.object(sessions, "watched_directory", lambda: None):
-            with unittest.mock.patch.object(
-                sessions, "watched_directories",
+        with (
+            unittest.mock.patch.object(sessions, "watched_directory", lambda: None),
+            unittest.mock.patch.object(
+                sessions,
+                "watched_directories",
                 return_value=["/projetos/dd", "/projetos/outro"],
-            ):
-                with self.patch_pending([ask(directory="/projetos/dd")]) as query:
-                    with self.patch_active([]):
-                        with self.no_names():
-                            poller._cycle(fast=True)
-                            poller._cycle(fast=True)
+            ),
+            self.patch_pending([ask(directory="/projetos/dd")]) as query,
+            self.patch_active([]),
+            self.no_names(),
+        ):
+            poller._cycle(fast=True)
+            poller._cycle(fast=True)
 
         self.assertEqual(query.call_args.args[2], ["/projetos/dd"])
 
     def test_the_slow_cycle_sweeps_every_project(self):
         poller = self.build()
 
-        with unittest.mock.patch.object(sessions, "watched_directory", lambda: None):
-            with unittest.mock.patch.object(
-                sessions, "watched_directories",
+        with (
+            unittest.mock.patch.object(sessions, "watched_directory", lambda: None),
+            unittest.mock.patch.object(
+                sessions,
+                "watched_directories",
                 return_value=["/projetos/dd", "/projetos/outro"],
-            ):
-                with self.patch_pending([ask(directory="/projetos/dd")]) as query:
-                    with self.patch_active([]):
-                        with self.no_names():
-                            poller._cycle(fast=False)
+            ),
+            self.patch_pending([ask(directory="/projetos/dd")]) as query,
+            self.patch_active([]),
+            self.no_names(),
+        ):
+            poller._cycle(fast=False)
 
         self.assertEqual(query.call_args.args[2],
                          ["/projetos/dd", "/projetos/outro"])

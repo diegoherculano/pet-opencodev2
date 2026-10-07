@@ -30,8 +30,8 @@ from petwatch.pending import (
     pending_forms,
     pending_permissions,
     session_info,
-    watched_directory,
     watched_directories,
+    watched_directory,
 )
 
 PORT = 4096
@@ -157,9 +157,8 @@ class PendingAsksTests(unittest.TestCase):
     def test_server_error_is_an_error(self):
         get, _ = fake_get([("/api/form", 500, None)])
 
-        with mock.patch.object(pending, "get_json", get):
-            with self.assertRaises(HttpError):
-                pending_forms(PORT, "s", "/projetos/dd")
+        with mock.patch.object(pending, "get_json", get), self.assertRaises(HttpError):
+            pending_forms(PORT, "s", "/projetos/dd")
 
     def test_items_without_id_are_ignored(self):
         body = {"data": [{"sessionID": "ses_1"}, "lixo", None]}
@@ -215,18 +214,22 @@ class PendingAsksTests(unittest.TestCase):
 
         get, _ = fake_get([("/api/form", 404, body)])
 
-        with mock.patch.object(pending, "get_json", get):
-            with self.assertRaises(LocationNotFound):
-                pending_forms(PORT, "s", "/projetos/dd")
+        with (
+            mock.patch.object(pending, "get_json", get),
+            self.assertRaises(LocationNotFound),
+        ):
+            pending_forms(PORT, "s", "/projetos/dd")
 
     def test_the_permission_route_tells_the_two_aparts_too(self):
         body = {"_tag": "LocationNotFoundError"}
 
         get, _ = fake_get([("/api/permission/request", 404, body)])
 
-        with mock.patch.object(pending, "get_json", get):
-            with self.assertRaises(LocationNotFound):
-                pending_permissions(PORT, "s", "/projetos/dd")
+        with (
+            mock.patch.object(pending, "get_json", get),
+            self.assertRaises(LocationNotFound),
+        ):
+            pending_permissions(PORT, "s", "/projetos/dd")
 
     def test_a_dead_location_does_not_turn_the_feature_off(self):
         """Um projeto apagado não pode calar o pet inteiro.
@@ -301,9 +304,8 @@ class PendingAsksTests(unittest.TestCase):
 
             return 500, None
 
-        with mock.patch.object(pending, "get_json", _get):
-            with self.assertRaises(HttpError):
-                pending_asks(PORT, "s", ["/projetos/sumiu", "/quebrou"])
+        with mock.patch.object(pending, "get_json", _get), self.assertRaises(HttpError):
+            pending_asks(PORT, "s", ["/projetos/sumiu", "/quebrou"])
 
     def test_the_tag_is_what_separates_them(self):
         """Um 404 com corpo de JSON qualquer continua sendo rota ausente."""
@@ -339,9 +341,8 @@ class PendingAsksTests(unittest.TestCase):
         def _get(_port, _password, _path, *, timeout=pending.PENDING_TIMEOUT):
             return 500, None
 
-        with mock.patch.object(pending, "get_json", _get):
-            with self.assertRaises(HttpError):
-                pending_asks(PORT, "s", ["/a", "/b"])
+        with mock.patch.object(pending, "get_json", _get), self.assertRaises(HttpError):
+            pending_asks(PORT, "s", ["/a", "/b"])
 
     def test_projects_come_canonical_and_without_repeats(self):
         body = [
@@ -362,9 +363,11 @@ class PendingAsksTests(unittest.TestCase):
     def test_watched_directory_wins_over_the_project_list(self):
         get, calls = fake_get([("/api/project", 200, [{"canonical": "/outro"}])])
 
-        with mock.patch.dict(os.environ, {"PETWATCH_DIRECTORY": "/projetos/dd"}):
-            with mock.patch.object(pending, "get_json", get):
-                self.assertEqual(watched_directories(PORT, "s"), ["/projetos/dd"])
+        with (
+            mock.patch.dict(os.environ, {"PETWATCH_DIRECTORY": "/projetos/dd"}),
+            mock.patch.object(pending, "get_json", get),
+        ):
+            self.assertEqual(watched_directories(PORT, "s"), ["/projetos/dd"])
 
         # Nem chegou a consultar a lista de projetos.
         self.assertEqual(calls, [])

@@ -32,8 +32,9 @@ O evento de pedido aqui é só **gatilho**: :func:`is_ask_event` e
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 from .states import (
     STATE_IDLE,
@@ -167,9 +168,10 @@ class StateRule:
     statuses: frozenset[str] = frozenset()
 
     def matches(self, event_type: str, status: str | None) -> bool:
-        if event_type not in self.exact:
-            if not any(fragment in event_type for fragment in self.contains):
-                return False
+        if event_type not in self.exact and not any(
+            fragment in event_type for fragment in self.contains
+        ):
+            return False
 
         if self.statuses:
             return status in self.statuses

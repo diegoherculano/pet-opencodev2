@@ -67,6 +67,7 @@ montagem do app, não deste módulo.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import errno
 import fcntl
 import logging
@@ -680,11 +681,8 @@ def _report_startup_file(path: Path, message: str) -> None:
     except OSError as exc:
         log.debug("[pet] não consegui confirmar a abertura em %s: %s", path, exc)
 
-        try:
+        with contextlib.suppress(OSError):
             temporary.unlink(missing_ok=True)
-
-        except OSError:
-            pass
 
 
 def _report_result(message: str | None, log_path: Path) -> int:

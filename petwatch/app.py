@@ -7,7 +7,7 @@ import signal
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt, Signal, Slot
+from PySide6.QtCore import Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import QApplication
 
 from .config import (

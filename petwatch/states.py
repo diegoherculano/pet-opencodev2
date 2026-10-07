@@ -11,7 +11,7 @@ nada de verdade a dizer, e o sprite sozinho já avisa que o pet está vivo.
 
 from __future__ import annotations
 
-from typing import Mapping
+from collections.abc import Mapping
 
 STATE_CONNECTING = "connecting"
 STATE_IDLE = "idle"

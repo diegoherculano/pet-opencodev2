@@ -42,11 +42,11 @@ qualquer aba a solta. Ver o bug 20 em ``docs/BUGS.md``.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
@@ -61,8 +61,8 @@ from .pending import (
     active_sessions,
     pending_asks,
     session_info,
-    watched_directory,
     watched_directories,
+    watched_directory,
 )
 from .states import STATE_CONNECTING, STATE_IDLE, STATE_WAITING, STATE_WORKING
 

@@ -54,7 +54,7 @@ class SizeTests(unittest.TestCase):
     def test_presets_grow(self):
         sizes = [PET_SIZES[key] for key in SIZE_ORDER]
 
-        for smaller, bigger in zip(sizes, sizes[1:]):
+        for smaller, bigger in zip(sizes, sizes[1:], strict=False):
             with self.subTest(smaller=smaller.key):
                 self.assertLess(smaller.sprite_width, bigger.sprite_width)
                 self.assertLess(smaller.card_width, bigger.card_width)
@@ -109,9 +109,8 @@ class SizeTests(unittest.TestCase):
         Medido com o preset aplicado, porque a fonte muda junto.
         """
 
-        from petwatch.ui import bubble
-
         from petwatch.config import BUBBLE_TOP_MARGIN, SPRITE_MARGIN_BOTTOM
+        from petwatch.ui import bubble
 
         theme = load_theme("eevee")
 

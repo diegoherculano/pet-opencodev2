@@ -59,9 +59,8 @@ class OptionsTests(unittest.TestCase):
 
     def test_both_modes_at_once_is_a_usage_error(self):
         # O argparse escreve o uso em ``stderr``; aqui é só ruído.
-        with contextlib.redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit):
-                parse_args(["-f", "-b"])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse_args(["-f", "-b"])
 
     def test_stop_and_status_are_flags(self):
         self.assertTrue(parse_args(["--stop"]).stop)
@@ -401,9 +400,11 @@ class StopTests(unittest.TestCase):
     def stop(self) -> tuple[int, mock.MagicMock]:
         """Roda ``--stop`` sem o barulho na saída da suíte."""
 
-        with mock.patch("petwatch.daemon.os.kill") as kill:
-            with contextlib.redirect_stdout(io.StringIO()) as said:
-                code = stop_instance(self.instance)
+        with (
+            mock.patch("petwatch.daemon.os.kill") as kill,
+            contextlib.redirect_stdout(io.StringIO()) as said,
+        ):
+            code = stop_instance(self.instance)
 
         self.assertIsInstance(said.getvalue(), str)
 
@@ -419,16 +420,18 @@ class StopTests(unittest.TestCase):
         kill.assert_called_once_with(pid, signal.SIGTERM)
 
     def test_it_waits_for_the_pet_to_be_gone(self):
-        pid = self.claimed()
+        self.claimed()
 
         def die(*_):
             """O pet recebeu o sinal e saiu, soltando o lock."""
 
             self.instance.release()
 
-        with mock.patch("petwatch.daemon.os.kill", side_effect=die):
-            with contextlib.redirect_stdout(io.StringIO()):
-                code = stop_instance(self.instance)
+        with (
+            mock.patch("petwatch.daemon.os.kill", side_effect=die),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            code = stop_instance(self.instance)
 
         self.assertEqual(code, 0)
 
@@ -445,9 +448,8 @@ class StopTests(unittest.TestCase):
         with mock.patch(
             "petwatch.daemon.os.kill",
             side_effect=ProcessLookupError,
-        ):
-            with contextlib.redirect_stdout(io.StringIO()):
-                code = stop_instance(self.instance)
+        ), contextlib.redirect_stdout(io.StringIO()):
+            code = stop_instance(self.instance)
 
         self.assertEqual(code, 1)
 
@@ -460,9 +462,9 @@ class StopTests(unittest.TestCase):
             mock.patch("petwatch.daemon.os.kill"),
             mock.patch("petwatch.daemon.STOP_TIMEOUT", 0.2),
             mock.patch("petwatch.daemon.STOP_POLL", 0.01),
+            contextlib.redirect_stdout(io.StringIO()),
         ):
-            with contextlib.redirect_stdout(io.StringIO()):
-                code = stop_instance(self.instance)
+            code = stop_instance(self.instance)
 
         self.assertEqual(code, 1)
 
@@ -615,11 +617,8 @@ class DetachTests(unittest.TestCase):
 
     def tearDown(self):
         if self.pid is not None:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 os.kill(self.pid, signal.SIGKILL)
-
-            except ProcessLookupError:
-                pass
 
     def wait_for_log(self, timeout: float = 15.0) -> str:
         """Espera o rastro aparecer e devolve o log inteiro."""

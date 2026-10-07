@@ -15,6 +15,7 @@ timeout e só então falha. Medido nesta máquina:
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import logging
@@ -146,12 +147,9 @@ class Connection:
         if sock is None:
             return
 
-        try:
+        # Já desligado ou fechado: nada a fazer.
+        with contextlib.suppress(OSError):
             sock.shutdown(socket.SHUT_RDWR)
-
-        except OSError:
-            # Já desligado ou fechado: nada a fazer.
-            pass
 
     def close(self) -> None:
         """Fecha a resposta e a conexão. Idempotente."""

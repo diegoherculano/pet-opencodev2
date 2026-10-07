@@ -44,8 +44,8 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from .config import (
     EVENT_PATH,
@@ -511,7 +511,7 @@ def get_opencode_password() -> str | None:
 def make_auth_header(password: str) -> str:
     """Header ``Authorization`` Basic para o usuário configurado."""
 
-    raw = f"{USERNAME}:{password}".encode("utf-8")
+    raw = f"{USERNAME}:{password}".encode()
 
     return "Basic " + base64.b64encode(raw).decode("ascii")
 
