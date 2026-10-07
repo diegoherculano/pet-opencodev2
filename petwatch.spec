@@ -1,11 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""Build do ``petwatch.exe``: um arquivo, sem dependência externa.
+"""Build do ``petwatch.exe``: uma pasta, sem dependência externa.
 
     py -3 -m pip install pyinstaller
     py -3 -m PyInstaller petwatch.spec --noconfirm
 
-Um único ``petwatch.exe``, sem console, com o Qt inteiro dentro. A máquina
-alvo não precisa de Python, de PySide6, nem de nenhum plugin do Qt.
+Uma pasta ``dist/petwatch`` com o ``petwatch.exe`` dentro, sem console, com
+o Qt inteiro ao lado. A máquina alvo não precisa de Python, de PySide6, nem
+de nenhum plugin do Qt.
 
 **O build precisa rodar no Windows.** O PyInstaller não faz cross-compile:
 o executável producedo aqui carrega o bootloader do sistema que o constrói.
@@ -19,10 +20,12 @@ De WSL dá para chamar o Python do Windows —
 As três decisões do arquivo
 ---------------------------
 
-``--onefile``
-    Um executável só, extraído para ``%TEMP%`` a cada arranque. O filho do
-    segundo plano herda a extração por ``_MEIPASS2``, então a janela do pet
-    não paga esse custo duas vezes.
+``--onedir``
+    Uma pasta em vez de um arquivo só. Nada é extraído para ``%TEMP%`` a
+    cada arranque, então some o aviso ``Failed to remove temporary
+    directory`` do bootloader do ``onefile`` (que aparecia quando o
+    antivírus segurava um lock nas DLLs do Qt na hora de apagar o
+    ``_MEIxxxxx``). O arranque também fica instantâneo.
 
 ``--noconsole``
     O processo solto é um pet de desktop; uma janela de consola preta ao
@@ -32,10 +35,10 @@ As três decisões do arquivo
 
 ``--add-data pets/eevee``
     Só o tema padrão, ~25 KB. Os 1738 pets são 62 MB de dados de terceiros,
-    e dentro do ``onefile`` eles seriam extraídos para ``%TEMP%`` a cada
-    arranque, além de transformar "adicionar um pet" em "recompilar". O
-    app acha os pets do usuário em ``%LOCALAPPDATA%\\petwatch\\pets``, e
-    este aqui é só o que garante um ``.exe`` novo ter o que abrir.
+    e não entram no bundle para não transformar "adicionar um pet" em
+    "recompilar". O app acha os pets do usuário em
+    ``%LOCALAPPDATA%\\petwatch\\pets``, e este aqui é só o que garante um
+    build novo ter o que abrir.
 """
 
 from pathlib import Path
@@ -130,10 +133,8 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="petwatch",
     debug=False,
     bootloader_ignore_signals=False,
@@ -149,4 +150,17 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=str(ICON) if ICON.exists() else None,
+)
+
+# ``onedir``: o .exe fica em dist/petwatch/ com as DLLs ao lado, sem
+# extração para %TEMP% — é o que elimina o "Failed to remove temporary
+# directory" do onefile.
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    name="petwatch",
 )

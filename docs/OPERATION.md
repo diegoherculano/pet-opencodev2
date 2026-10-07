@@ -76,7 +76,7 @@ petwatch.exe --stop
 
 ```powershell
 py -3 -m pip install -e ".[build]"
-py -3 -m PyInstaller petwatch.spec --noconfirm   # -> dist\petwatch.exe
+py -3 -m PyInstaller petwatch.spec --noconfirm   # -> dist\petwatch\petwatch.exe
 ```
 
 O build **precisa rodar no Windows** — o PyInstaller não faz cross-compile, e
@@ -89,7 +89,7 @@ powershell.exe -NoProfile -Command "py -3 -m PyInstaller petwatch.spec --noconfi
 Passo a passo, verificação e erros comuns em [`BUILD.md`](BUILD.md); o CI
 faz esse build em `windows-latest`.
 
-O `petwatch.spec` monta um `onefile` **sem console**. Um processo solto é um
+O `petwatch.spec` monta um `onedir` **sem console**. Um processo solto é um
 pet de desktop: uma janela de console preta ao lado dele seria o oposto do
 que o programa promete. O que o terminal perdia — as frases do `--status` e
 do `--stop`, que um duplo clique não tem onde mostrar — vira caixa de diálogo
@@ -105,8 +105,7 @@ seria um pet funcionando com um log vazio e nenhum erro na tela. Por isso
 
 ### Os pets
 
-Os 62 MB dos 1738 temas não entram no executável: dentro do `onefile` eles
-seriam extraídos para `%TEMP%` a cada arranque, e "adicionar um pet" viraria
+Os 62 MB dos 1738 temas não entram no executável: "adicionar um pet" não pode virar
 "recompilar". O `petwatch.exe` embute só o tema padrão (`eevee`, ~25 KB), e os
 pets do usuário são procurados nesta ordem:
 

@@ -5,7 +5,7 @@ em [OPERATION.md](OPERATION.md).
 
 ## O executável
 
-`dist\petwatch.exe` — um arquivo só, sem console, da ordem de 100 MB (o número
+`dist\petwatch\petwatch.exe` — uma pasta, sem console, da ordem de 100 MB (o número
 exato sai no log do build). A máquina alvo não precisa de Python, de PySide6
 nem de plugin do Qt.
 
@@ -46,17 +46,17 @@ fica em **Actions → petwatch-windows**.
 | `pets/eevee` | Sim (~25 KB) — é o tema padrão |
 | Os outros 1738 pets | **Não.** Ficam em `%LOCALAPPDATA%\petwatch\pets` |
 
-Os 62 MB da coleção completa não entram: dentro do `onefile` seriam extraídos
-para `%TEMP%` a cada arranque, e "adicionar um pet" viraria "recompilar".
+Os 62 MB da coleção completa não entram: "adicionar um pet" não pode virar
+"recompilar".
 Quem quiser a coleção inteira aponta `$PETWATCH_PETS_DIR`, deixa a pasta
 `pets/` ao lado do `.exe`, ou copia para `%LOCALAPPDATA%\petwatch\pets`.
 
 ## Verificar
 
 ```powershell
-dist\petwatch.exe --status   # exit 1 + "não está rodando" = funciona
-dist\petwatch.exe            # o pet abre na tela
-dist\petwatch.exe --stop     # encerra
+dist\petwatch\petwatch.exe --status   # exit 1 + "não está rodando" = funciona
+dist\petwatch\petwatch.exe            # o pet abre na tela
+dist\petwatch\petwatch.exe --stop     # encerra
 ```
 
 O `--status` é a prova de que não falta DLL: um executável com dependência
@@ -81,7 +81,7 @@ arquivo entrou:
 | Pisca uma janela de console | O build passou pelo `pet.py` em vez do `.spec`. O `console=False` está no spec. |
 | O pet abre parado | `qwebp.dll` não entrou no bundle; o log mostra `preview.gif`. |
 | "Windows proteveu o seu PC" | Executável sem assinatura. É o esperado de todo build local do PyInstaller; publicar exige certificado. |
-| Demora 2–4 s para abrir | O `onefile` extrai para `%TEMP%` a cada arranque. Aceitável; `--onedir` troca isso por arranque instantâneo ao custo de virar uma pasta. |
+| "Failed to remove temporary directory" | Era do build antigo em `onefile`. No `onedir` atual não há extração em `%TEMP%`; se aparecer, é resto de versão antiga — encerre o pet e apague `%TEMP%\_MEI*`. |
 | O `.exe` não roda no Linux/WSL | Não roda por definição — é PE para Windows. Use `python -m petwatch`. |
 | `FileNotFoundError` no primeiro uso | `%LOCALAPPDATA%\petwatch` não existia numa build antiga. Já é corrigido (ver `CHANGELOG.md`); o sintoma era "já existe um pet rodando (pid None)". |
 

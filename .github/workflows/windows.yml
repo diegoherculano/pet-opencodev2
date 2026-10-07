@@ -33,4 +33,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: petwatch-windows
-          path: dist/petwatch.exe
+          path: dist/petwatch/

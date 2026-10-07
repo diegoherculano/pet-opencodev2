@@ -61,11 +61,11 @@ pip install -e .
 python -m petwatch
 ```
 
-Ou o executável único, que não depende de nada instalado:
+Ou o executável, que não depende de nada instalado:
 
 ```powershell
 py -3 -m pip install pyinstaller
-py -3 -m PyInstaller petwatch.spec --noconfirm   # -> dist\petwatch.exe
+py -3 -m PyInstaller petwatch.spec --noconfirm   # -> dist\petwatch\petwatch.exe
 ```
 
 O build precisa rodar no Windows — o PyInstaller não faz cross-compile — e o
