@@ -69,16 +69,24 @@ from __future__ import annotations
 import argparse
 import contextlib
 import errno
-import fcntl
 import logging
 import os
-import select
 import signal
 import subprocess
 import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows não tem fcntl
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import select
+except ImportError:  # pragma: no cover - plataforma sem select
+    select = None  # type: ignore[assignment]
 
 from .config import BASE_DIR, LOG_PATH, PID_PATH
 from .console import say
@@ -401,6 +409,14 @@ def _try_lock(fd: int) -> bool:
     pet nenhum na tela — e sem deixar pista de onde veio.
     """
 
+    if fcntl is None:  # pragma: no cover - Windows não tem flock
+        log.warning(
+            "[pet] flock indisponível nesta plataforma; o pet vai rodar sem "
+            "a garantia de instância única"
+        )
+
+        return True
+
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
@@ -721,6 +737,11 @@ def _report_result(message: str | None, log_path: Path) -> int:
 
 def _read_until_eof(fd: int, timeout: float) -> str | None:
     """Lê uma linha até o EOF. ``None`` se o prazo estourar primeiro."""
+
+    if select is None:  # pragma: no cover - plataforma sem select
+        log.warning("[pet] select indisponível nesta plataforma")
+
+        return None
 
     deadline = time.monotonic() + timeout
 

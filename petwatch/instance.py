@@ -40,7 +40,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .config import PID_PATH, STATE_DIR, ensure_state_dir
-from .daemon import SingleInstance
 from .pipe import PING, STOP, PipeServer, ask
 
 log = logging.getLogger(__name__)
@@ -227,6 +226,8 @@ def open_instance(
 
     if windows.startswith("win"):
         return PipeInstance(path, state_dir)
+
+    from .daemon import SingleInstance
 
     return SingleInstance(path)
 
