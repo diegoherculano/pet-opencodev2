@@ -47,6 +47,11 @@ Todas as mudanças notáveis deste projeto são documentadas aqui, no formato
   como reserva para `load_theme`. Isso conserta também o `pip install`, que
   não achava os pets em nenhuma plataforma.
 - `PETWATCH_PORT` para fixar a porta e pular a varredura.
+- `PETWATCH_PASSWORD` para fixar a senha sem chamar o CLI. É a saída para o
+  pet no Windows com o servidor no WSL, cuja senha mora em outro sistema de
+  arquivos — e no Windows o pet ainda tenta o WSL sozinho (`wsl` +
+  `~/.opencode/bin/opencode2 service get password`, com o `service.json` de
+  reserva), porque cada sistema tem o seu `service.json`.
 
 ### Corrigido
 
@@ -98,6 +103,16 @@ Todas as mudanças notáveis deste projeto são documentadas aqui, no formato
   ciclo; volta sozinho quando a lista de projetos é relida.
 - O aviso de degradação subiu de `INFO` para `WARNING`, para aparecer no log
   do modo solto.
+- **Pet no Windows com o opencode no WSL.** O CLI procurado era só o
+  `opencode2`, mas no Windows o scoop instala `opencode.exe` (sem o
+  subcomando `service`), e a senha do Windows é outra — o servidor do WSL
+  respondia `401` e o pet ficava em "conectando", só com a animação e sem
+  balão. Agora tenta `opencode2` e `opencode`, e no Windows tenta o WSL
+  (com cache de 60 s, porque o `wsl.exe` custa ~1 s por chamada).
+- **Terminal piscando no `.exe`.** Cada `netstat`/`wsl` aberto pelo pet
+  criava uma janela de console, e o monitor reconecta a cada 2 s — o
+  sintoma era um terminal que não parava de aparecer. Os filhos agora sobem
+  com `CREATE_NO_WINDOW`.
 
 ### Alterado
 

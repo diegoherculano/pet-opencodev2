@@ -476,6 +476,8 @@ class ContentTypeTests(unittest.TestCase):
 
 class PasswordCommandTests(unittest.TestCase):
     def setUp(self):
+        discovery.reset_cache()
+
         self.addCleanup(discovery.reset_cache)
 
     def test_a_resolved_executable_is_used_as_is(self):
@@ -590,6 +592,62 @@ class PasswordCommandTests(unittest.TestCase):
     def test_wsl_password_is_skipped_off_windows(self):
         with mock.patch.object(discovery.os, "name", "posix"):
             self.assertIsNone(discovery.get_wsl_password())
+
+    def test_children_spawn_without_a_console_on_windows(self):
+        """Cada ``netstat``/``wsl`` piscava um terminal no ``.exe``."""
+
+        seen: dict = {}
+
+        def run(command, **kwargs):
+            seen.update(kwargs)
+
+            result = mock.Mock()
+
+            result.returncode = 1
+
+            result.stdout = ""
+
+            return result
+
+        with mock.patch.object(
+            discovery.os, "name", "nt"
+        ), mock.patch.object(discovery.subprocess, "run", side_effect=run):
+            discovery._run_password_command(["wsl", "--", "cat", "x"])
+            self.assertIn("creationflags", seen)
+
+            seen.clear()
+            discovery.run_scan(["netstat", "-ano", "-p", "tcp"])
+            self.assertIn("creationflags", seen)
+
+    def test_children_keep_a_console_off_windows(self):
+        with mock.patch.object(discovery.os, "name", "posix"):
+            self.assertEqual(discovery._silent_kwargs(), {})
+
+    def test_wsl_password_is_cached(self):
+        """O ``wsl.exe`` custa ~1s; o monitor pede a senha a cada ciclo."""
+
+        calls: list = []
+
+        def run(command, **kwargs):
+            calls.append(list(command))
+
+            result = mock.Mock()
+
+            result.returncode = 0
+
+            result.stdout = "senha-do-wsl"
+
+            return result
+
+        with mock.patch.object(
+            discovery.shutil, "which", return_value="wsl.EXE"
+        ), mock.patch.object(discovery.os, "name", "nt"), mock.patch.object(
+            discovery.subprocess, "run", side_effect=run,
+        ):
+            self.assertEqual(discovery.get_wsl_password(), "senha-do-wsl")
+            self.assertEqual(discovery.get_wsl_password(), "senha-do-wsl")
+
+        self.assertEqual(len(calls), 1)
 
 
 # ------------------------------------------------------------

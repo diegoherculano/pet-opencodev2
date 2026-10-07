@@ -114,7 +114,7 @@ caixa de diálogo, porque um duplo clique não tem terminal onde mostrar.
 - [`docs/OPERATION.md`](docs/OPERATION.md) — segundo plano, menu, prefs, log
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — pipeline, eventos, watchdog, sprites
 - [`docs/BUILD.md`](docs/BUILD.md) — como gerar o `petwatch.exe`
-- [`docs/TESTING.md`](docs/TESTING.md) — a suíte de 677 testes
+- [`docs/TESTING.md`](docs/TESTING.md) — a suíte de 680 testes
 - [`docs/BUGS.md`](docs/BUGS.md) — histórico de bugs corrigidos
 - [`CHANGELOG.md`](CHANGELOG.md) — mudanças por versão
 

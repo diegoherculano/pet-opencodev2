@@ -96,6 +96,31 @@ _listeners: tuple[float, list[int]] | None = None
 #: a conhecida primeiro transforma a reconexão num único GET.
 _last_good_port: int | None = None
 
+#: Senha do WSL já resolvida, com o instante da leitura. O ``wsl.exe``
+#: custa ~1s por chamada, e o monitor pede a senha a cada reconexão —
+#: sem cache seriam 4 spawn por ciclo, para sempre.
+_wsl_password: tuple[float, str | None] | None = None
+
+#: Quanto tempo a senha do WSL vale sem reler. Ela não muda enquanto o
+#: serviço roda; o TTL existe só para um WSL que subiu depois do pet.
+WSL_PASSWORD_TTL_SECONDS = 60.0
+
+
+def _silent_kwargs() -> dict:
+    """Sem janela de console nos filhos, no Windows.
+
+    Sem ``CREATE_NO_WINDOW`` cada ``netstat``/``wsl`` aberto pelo pet pisca
+    um terminal na tela — e o monitor reconecta a cada 2s, então o sintoma
+    é um terminal que não para de aparecer.
+    """
+
+    if os.name != "nt":
+        return {}
+
+    flag = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+    return {"creationflags": flag} if flag else {}
+
 
 # ------------------------------------------------------------
 # Leitura das portas em escuta
@@ -292,6 +317,7 @@ def run_scan(command: list[str]) -> str:
             text=True,
             timeout=PORT_SCAN_TIMEOUT,
             check=False,
+            **_silent_kwargs(),
         )
 
     except Exception as exc:
@@ -382,11 +408,13 @@ def reset_cache() -> None:
     verificável.
     """
 
-    global _listeners, _last_good_port
+    global _listeners, _last_good_port, _wsl_password
 
     _listeners = None
 
     _last_good_port = None
+
+    _wsl_password = None
 
 
 def env_port() -> int | None:
@@ -537,6 +565,7 @@ def _run_password_command(command: list[str]) -> str | None:
             text=True,
             timeout=PASSWORD_TIMEOUT,
             check=False,
+            **_silent_kwargs(),
         )
 
     except Exception as exc:
@@ -558,6 +587,27 @@ def get_wsl_password() -> str | None:
     ``service.json``). A ordem é o CLI pelo caminho completo (o ``PATH``
     do ``wsl`` não tem o ``~/.opencode/bin``) e, por último, o arquivo.
     """
+
+    global _wsl_password
+
+    if os.name != "nt":
+        return None
+
+    if _wsl_password is not None:
+        age = time.monotonic() - _wsl_password[0]
+
+        if age < WSL_PASSWORD_TTL_SECONDS:
+            return _wsl_password[1]
+
+    found = _read_wsl_password()
+
+    _wsl_password = (time.monotonic(), found)
+
+    return found
+
+
+def _read_wsl_password() -> str | None:
+    """Lê a senha do WSL sem cache, ou ``None``."""
 
     if os.name != "nt":
         return None
