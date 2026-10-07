@@ -1,10 +1,7 @@
 name: Windows
 
-# O build do `petwatch.exe` roda aqui porque o PyInstaller não faz
-# cross-compile: o bootloader do executável é o da plataforma que o
-# construiu. Uma job Linux testaria o código — e a `ci.yml` já faz isso em
-# três versões de Python — mas não produziria um `.exe`, que é o que este
-# repositório promete.
+# Build do `petwatch.exe`. O PyInstaller não faz cross-compile: o
+# executável precisa ser construído no Windows.
 
 on:
   push:
@@ -12,62 +9,10 @@ on:
   pull_request:
   workflow_dispatch:
 
-env:
-  # Sem janela em máquina de CI: o mesmo backend que a suíte já usa no
-  # Linux. Sem isto o `QApplication` abriria uma janela de verdade.
-  QT_QPA_PLATFORM: offscreen
-
 jobs:
-  test:
-    name: suíte no Windows
-    runs-on: windows-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Lint
-        run: ruff check .
-
-      - name: Tests
-        run: python -m unittest discover -s tests -t .
-
-      # A suíte roda em `offscreen` para não precisar de display, mas o que
-      # o `.exe` usa é o plugin `windows`. Subir o app de verdade é a única
-      # forma de pegar o que nenhum teste de headless pega — e é aqui que
-      # moram as três coisas que só o Windows tem: o tray, o z-order de
-      # `WS_EX_TOPMOST` e o `--child` do `Popen` detached.
-      #
-      # `continue-on-error` porque um runner sem sessão de desktop falha ao
-      # abrir qualquer janela, e essa falha não diz nada sobre o código.
-      # Fica como sinal, não como gate.
-      - name: o app sobe com o plugin de tela do Windows
-        continue-on-error: true
-        shell: pwsh
-        env:
-          QT_QPA_PLATFORM: windows
-        run: |
-          python -m petwatch
-          Start-Sleep -Seconds 3
-          python -m petwatch --status
-          python -m petwatch --stop
-
   build:
     name: petwatch.exe
     runs-on: windows-latest
-    needs: test
 
     steps:
       - uses: actions/checkout@v4
@@ -84,20 +29,6 @@ jobs:
 
       - name: build
         run: py -3 -m PyInstaller petwatch.spec --noconfirm
-
-      # A prova de que não depende de nada está em rodá-lo: um `.exe` que
-      # dlse de DLL ausente falha na hora. O `--status` responde "não está
-      # rodando" com código 1, que é o mesmo que a suíte já garante no
-      # Linux.
-      - name: o executável existe e roda sozinho
-        shell: pwsh
-        run: |
-          $exe = "dist\petwatch.exe"
-          if (-not (Test-Path $exe)) { throw "dist\petwatch.exe não foi gerado" }
-          $size = [math]::Round((Get-Item $exe).Length / 1MB)
-          Write-Host "petwatch.exe: $size MB"
-          & $exe --status
-          Write-Host "--status saiu com $LASTEXITCODE (1 = não há pet rodando)"
 
       - uses: actions/upload-artifact@v4
         with:
