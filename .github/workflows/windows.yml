@@ -25,10 +25,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install PySide6 pyinstaller
+          python -m pip install PySide6 pyinstaller
 
       - name: build
-        run: py -3 -m PyInstaller petwatch.spec --noconfirm
+        run: python -m PyInstaller petwatch.spec --noconfirm
 
       - uses: actions/upload-artifact@v4
         with:
