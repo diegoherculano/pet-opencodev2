@@ -168,6 +168,30 @@ descartado (é o caso do WSLg, e o item do menu fica desativado com o motivo
 na dica); no Windows ele vira `WS_EX_TOPMOST` e o gerenciador de janelas
 honra.
 
+### Pet no Windows com o opencode no WSL
+
+A porta do WSL aparece no Windows via `wslrelay` — o `netstat -ano`
+lista, e a sondagem em `127.0.0.1` alcança. O que não atravessa é a
+senha: cada sistema tem o seu `service.json`, e o CLI do Windows
+(`opencode.exe` do scoop, sem o subcomando `service`) não sabe a do WSL.
+
+A ordem da senha no Windows é: `PETWATCH_PASSWORD`, CLI local
+(`opencode2`, depois `opencode`) e, por último, o WSL (`wsl` +
+`~/.opencode/bin/opencode2 service get password`, com o
+`~/.config/opencode/service.json` de reserva). Na prática funciona sem
+configurar nada.
+
+Se ficar em "conectando", o log (`%LOCALAPPDATA%\petwatch\pet.log`)
+mostra se a senha veio do WSL. Reserva manual:
+
+```powershell
+wsl cat ~/.config/opencode/service.json   # copie o "password"
+setx PETWATCH_PASSWORD "cole-aqui"
+```
+
+Reinicie o pet depois do `setx`. `PETWATCH_PORT` continua valendo para
+pular a busca quando a porta é conhecida.
+
 ## Menu (botão direito)
 
 | Item | O que faz |

@@ -7,7 +7,7 @@ Como rodar e o que a suíte cobre. Visão geral em [README](../README.md).
 QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests -t .
 ```
 
-671 testes cobrindo o mapeamento de eventos, o parser SSE, a leitura do
+677 testes cobrindo o mapeamento de eventos, o parser SSE, a leitura do
 `pet.json`, a escolha do asset, o transporte HTTP, as consultas de
 pendência e de sessão, o quadro de instâncias, a pilha de balões
 (empilhamento ancorado embaixo, janela fixa, reticências, cor de aviso), a

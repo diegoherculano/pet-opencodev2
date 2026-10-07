@@ -521,10 +521,75 @@ class PasswordCommandTests(unittest.TestCase):
         with mock.patch.object(
             discovery.os, "name", "nt"
         ), mock.patch.object(discovery.shutil, "which", side_effect=which):
+            command = discovery.resolve_password_command()
+
             self.assertEqual(
-                discovery.resolve_password_command()[0],
-                "C:\\bin\\opencode2.cmd",
+                command,
+                ["cmd", "/d", "/s", "/c", "C:\\bin\\opencode2.cmd",
+                 "service", "get", "password"],
             )
+
+    def test_opencode_without_suffix_is_a_fallback(self):
+        """O scoop no Windows instala ``opencode.exe``, sem o ``2``."""
+
+        def which(name):
+            if name == "opencode2":
+                return None
+
+            if name == "opencode":
+                return "/usr/bin/opencode"
+
+            return None
+
+        with mock.patch.object(discovery.shutil, "which", side_effect=which):
+            self.assertEqual(
+                discovery.resolve_password_command(),
+                ["/usr/bin/opencode", "service", "get", "password"],
+            )
+
+    def test_env_password_wins_over_the_cli(self):
+        with mock.patch.dict(
+            os.environ, {"PETWATCH_PASSWORD": "  segredo  "}
+        ), mock.patch.object(
+            discovery,
+            "resolve_password_command",
+            side_effect=AssertionError("CLI não deveria ser chamado"),
+        ):
+            self.assertEqual(discovery.get_opencode_password(), "segredo")
+
+    def test_a_failing_local_cli_falls_back_to_wsl(self):
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+            discovery, "resolve_password_command",
+            return_value=["C:\\bin\\opencode.exe", "service", "get", "password"],
+        ), mock.patch.object(
+            discovery, "_run_password_command", return_value=None,
+        ), mock.patch.object(
+            discovery, "get_wsl_password", return_value="senha-do-wsl",
+        ):
+            self.assertEqual(discovery.get_opencode_password(), "senha-do-wsl")
+
+    def test_wsl_password_reads_service_json(self):
+        payload = '{"password": "  senha-do-wsl  "}'
+
+        def run(command, **kwargs):
+            result = mock.Mock()
+
+            result.returncode = 0
+
+            result.stdout = payload if command[-1].endswith("service.json") else ""
+
+            return result
+
+        with mock.patch.object(
+            discovery.shutil, "which", return_value="C:\\WINDOWS\\system32\\wsl.EXE"
+        ), mock.patch.object(discovery.os, "name", "nt"), mock.patch.object(
+            discovery.subprocess, "run", side_effect=run,
+        ):
+            self.assertEqual(discovery.get_wsl_password(), "senha-do-wsl")
+
+    def test_wsl_password_is_skipped_off_windows(self):
+        with mock.patch.object(discovery.os, "name", "posix"):
+            self.assertIsNone(discovery.get_wsl_password())
 
 
 # ------------------------------------------------------------

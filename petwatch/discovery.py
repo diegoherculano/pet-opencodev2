@@ -36,6 +36,7 @@ suíte testa o formato de cada uma sem depender do sistema em que roda.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import re
@@ -54,6 +55,8 @@ from .config import (
     MAX_LISTENERS,
     MAX_SWEEP_PORTS,
     PASSWORD_COMMAND,
+    PASSWORD_COMMANDS,
+    PASSWORD_ENV,
     PASSWORD_TIMEOUT,
     PORT_ENV,
     PORT_SCAN_TIMEOUT,
@@ -454,40 +457,78 @@ def _ordered(ports: list[int]) -> list[int]:
 # Senha
 # ------------------------------------------------------------
 
-def resolve_password_command() -> list[str] | None:
-    """Caminho do executável do CLI, ou ``None`` se não estiver no PATH.
-
-    No Windows o opencode costuma ser um ``.cmd`` (o npm põe assim) ou um
-    ``.exe``, e o ``CreateProcess`` só executa o primeiro quando recebe o
-    shell no meio. Testar os sufixos na mão resolve isso sem shell e sem
-    ``.bat``/``.cmd`` na linha de comando.
-    """
-
-    name = PASSWORD_COMMAND[0]
-
-    arguments = list(PASSWORD_COMMAND[1:])
+def _resolve_one(name: str, arguments: list[str]) -> list[str] | None:
+    """Resolve um nome de CLI, com os sufixos do Windows."""
 
     if os.name == "nt":
         for suffix in (".exe", ".cmd", ".bat"):
             found = shutil.which(name + suffix)
 
             if found:
-                return [found, *arguments]
+                return _with_shell(found, arguments)
 
     found = shutil.which(name)
 
-    return [found, *arguments] if found else None
-
-
-def get_opencode_password() -> str | None:
-    """Senha do serviço, ou ``None`` se o CLI falhar."""
-
-    command = resolve_password_command()
-
-    if command is None:
-        log.debug("[pet] CLI do opencode não está no PATH")
-
+    if found is None:
         return None
+
+    return _with_shell(found, arguments)
+
+
+def _with_shell(found: str, arguments: list[str]) -> list[str]:
+    """Envolve ``.cmd``/``.bat`` com o interpretador.
+
+    O ``CreateProcess`` não executa script em lote sem shell — sem isto o
+    ``subprocess`` levanta ``WinError 193`` em vez de rodar o CLI do npm.
+    """
+
+    if os.name == "nt" and found.lower().endswith((".cmd", ".bat")):
+        return ["cmd", "/d", "/s", "/c", found, *arguments]
+
+    return [found, *arguments]
+
+
+def resolve_password_command() -> list[str] | None:
+    """Caminho do executável do CLI, ou ``None`` se não estiver no PATH.
+
+    Tenta ``opencode2`` antes de ``opencode``: o primeiro é o binário novo
+    (o que ``~/.opencode/bin`` instala) e o segundo é o que gerenciadores
+    como o scoop colocam no Windows. No Windows o opencode costuma ser um
+    ``.cmd`` (o npm põe assim) ou um ``.exe``.
+    """
+
+    for command in PASSWORD_COMMANDS:
+        resolved = _resolve_one(command[0], list(command[1:]))
+
+        if resolved is not None:
+            return resolved
+
+    # Compatibilidade: quem importava a constante antiga continua caindo
+    # aqui quando ela não está na lista nova.
+    if PASSWORD_COMMAND not in PASSWORD_COMMANDS:
+        resolved = _resolve_one(PASSWORD_COMMAND[0], list(PASSWORD_COMMAND[1:]))
+
+        if resolved is not None:
+            return resolved
+
+    return None
+
+
+def env_password() -> str | None:
+    """Senha pedida na variável de ambiente, ou ``None``.
+
+    É a saída para o pet no Windows com o servidor no WSL: a senha do WSL
+    mora em outro sistema de arquivos, e copiar uma vez vale mais que
+    chamar o CLI errado a cada reconexão.
+    """
+
+    raw = os.environ.get(PASSWORD_ENV, "").strip()
+
+    return raw or None
+
+
+def _run_password_command(command: list[str]) -> str | None:
+    """Roda um comando de senha e devolve o stdout limpo, ou ``None``."""
 
     try:
         result = subprocess.run(
@@ -506,6 +547,94 @@ def get_opencode_password() -> str | None:
         return None
 
     return result.stdout.strip() or None
+
+
+def get_wsl_password() -> str | None:
+    """Senha do opencode que roda dentro do WSL, ou ``None``.
+
+    Só faz sentido no Windows: o ``wslrelay`` expõe a porta do servidor do
+    WSL em ``127.0.0.1``, então a descoberta por ``netstat`` já enxerga —
+    o que falta é a senha, que é outra (cada sistema tem o seu
+    ``service.json``). A ordem é o CLI pelo caminho completo (o ``PATH``
+    do ``wsl`` não tem o ``~/.opencode/bin``) e, por último, o arquivo.
+    """
+
+    if os.name != "nt":
+        return None
+
+    wsl = shutil.which("wsl") or shutil.which("wsl.exe")
+
+    if wsl is None:
+        return None
+
+    candidates = [
+        [wsl, "--", "~/.opencode/bin/opencode2", "service", "get", "password"],
+        [wsl, "--", "opencode2", "service", "get", "password"],
+        [wsl, "--", "~/.opencode/bin/opencode", "service", "get", "password"],
+    ]
+
+    for command in candidates:
+        password = _run_password_command(command)
+
+        if password:
+            return password
+
+    service = _run_password_command(
+        [wsl, "--", "cat", "~/.config/opencode/service.json"]
+    )
+
+    if not service:
+        return None
+
+    try:
+        payload = json.loads(service)
+
+    except ValueError as exc:
+        log.debug("[pet] service.json do WSL não é JSON: %s", exc)
+        return None
+
+    if isinstance(payload, dict):
+        password = payload.get("password")
+
+        if isinstance(password, str) and password.strip():
+            return password.strip()
+
+    return None
+
+
+def get_opencode_password() -> str | None:
+    """Senha do serviço, ou ``None`` se nada responder.
+
+    A ordem é: variável de ambiente, CLI local e — só no Windows — o WSL.
+    O CLI local é tentado mesmo quando falha (o ``opencode.exe`` do scoop
+    existe mas não tem o subcomando ``service``), porque é justamente esse
+    o caso em que o WSL salva: existir não é responder.
+    """
+
+    direct = env_password()
+
+    if direct:
+        return direct
+
+    command = resolve_password_command()
+
+    if command is not None:
+        password = _run_password_command(command)
+
+        if password:
+            return password
+
+        log.debug("[pet] CLI local não respondeu; tentando o WSL")
+
+    wsl_password = get_wsl_password()
+
+    if wsl_password:
+        return wsl_password
+
+    if command is None:
+        log.debug("[pet] CLI do opencode não está no PATH")
+
+    return None
 
 
 def make_auth_header(password: str) -> str:

@@ -89,6 +89,22 @@ python pet.py --foreground # colado no terminal (aqui o Ctrl+C funciona)
   `~/.config/petwatch/prefs.json` ou `%APPDATA%\petwatch\prefs.json`
 - Observar um projeto só: `PETWATCH_DIRECTORY=/caminho/do/projeto python pet.py`
 - Porta fixa, pulando a busca: `PETWATCH_PORT=4096 python pet.py`
+- Senha pronta, sem chamar o CLI: `PETWATCH_PASSWORD=... python pet.py`
+
+### Pet no Windows com o opencode no WSL
+
+Funciona sem configurar nada: a porta do WSL aparece no Windows via
+`wslrelay`, e o pet lê a senha de lá (`wsl` + `~/.opencode/bin/opencode2
+service get password`, com o `service.json` de reserva). Se o pet ficar
+em "conectando", confira o log em `%LOCALAPPDATA%\petwatch\pet.log` e, se
+precisar, fixe a senha uma vez:
+
+```powershell
+wsl cat ~/.config/opencode/service.json   # copie o "password"
+setx PETWATCH_PASSWORD "cole-aqui"         # vale para os próximos arranques
+```
+
+Reinicie o pet depois do `setx`.
 
 No `petwatch.exe` (sem console) o `--status` e o `--stop` respondem numa
 caixa de diálogo, porque um duplo clique não tem terminal onde mostrar.
@@ -98,7 +114,7 @@ caixa de diálogo, porque um duplo clique não tem terminal onde mostrar.
 - [`docs/OPERATION.md`](docs/OPERATION.md) — segundo plano, menu, prefs, log
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — pipeline, eventos, watchdog, sprites
 - [`docs/BUILD.md`](docs/BUILD.md) — como gerar o `petwatch.exe`
-- [`docs/TESTING.md`](docs/TESTING.md) — a suíte de 671 testes
+- [`docs/TESTING.md`](docs/TESTING.md) — a suíte de 677 testes
 - [`docs/BUGS.md`](docs/BUGS.md) — histórico de bugs corrigidos
 - [`CHANGELOG.md`](CHANGELOG.md) — mudanças por versão
 

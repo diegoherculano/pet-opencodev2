@@ -197,6 +197,21 @@ RECONNECT_DELAY = 2.0
 #: do processo solto.
 PASSWORD_COMMAND = ("opencode2", "service", "get", "password")
 
+#: Nomes aceitos para o CLI, em ordem de preferência. O ``opencode2`` é o
+#: binário novo (o que o ``~/.opencode/bin`` instala); o ``opencode`` sem o
+#: ``2`` é o que gerenciadores como o scoop colocam no Windows — e é
+#: justamente o que faltava para o pet achar a senha numa máquina com o
+#: servidor rodando no WSL.
+PASSWORD_COMMANDS = (
+    ("opencode2", "service", "get", "password"),
+    ("opencode", "service", "get", "password"),
+)
+
+#: Senha pronta, para quem não quer (ou não pode) chamar o CLI — o caso do
+#: pet no Windows com o servidor no WSL, cuja senha mora em outro sistema
+#: de arquivos. Vale mais que qualquer CLI e que o WSL.
+PASSWORD_ENV = "PETWATCH_PASSWORD"
+
 PASSWORD_TIMEOUT = 5.0
 
 #: Timeout da listagem de portas em escuta (``ss``, ``netstat`` ou a
