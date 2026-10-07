@@ -170,13 +170,12 @@ honra.
 
 ### Pet no Windows com o opencode no WSL
 
-A porta do WSL aparece no Windows via `wslrelay` — o `netstat -ano`
-lista, e a sondagem em `127.0.0.1` alcança. O que não atravessa é a
-senha: cada sistema tem o seu `service.json`, e o CLI do Windows
-(`opencode.exe` do scoop, sem o subcomando `service`) não sabe a do WSL.
+O pet é WSL-only no Windows: o único servidor que interessa é o do WSL.
+A porta dele aparece via `wslrelay` — o `netstat -ano` lista, e a sondagem
+em `127.0.0.1` alcança. A senha também vem de lá, e o CLI do Windows nem
+é consultado.
 
-A ordem da senha no Windows é: `PETWATCH_PASSWORD`, CLI local
-(`opencode2`, depois `opencode`) e, por último, o WSL (`wsl` +
+A ordem da senha no Windows é só: `PETWATCH_PASSWORD` e WSL (`wsl` +
 `~/.opencode/bin/opencode2 service get password`, com o
 `~/.config/opencode/service.json` de reserva). Na prática funciona sem
 configurar nada.

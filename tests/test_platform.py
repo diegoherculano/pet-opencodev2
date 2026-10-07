@@ -559,16 +559,27 @@ class PasswordCommandTests(unittest.TestCase):
         ):
             self.assertEqual(discovery.get_opencode_password(), "segredo")
 
-    def test_a_failing_local_cli_falls_back_to_wsl(self):
+    def test_on_windows_the_local_cli_is_skipped(self):
+        """O pet é WSL-only no Windows: o CLI local nem é consultado."""
+
         with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
-            discovery, "resolve_password_command",
-            return_value=["C:\\bin\\opencode.exe", "service", "get", "password"],
-        ), mock.patch.object(
-            discovery, "_run_password_command", return_value=None,
+            discovery,
+            "resolve_password_command",
+            side_effect=AssertionError("CLI local não deveria ser chamado"),
         ), mock.patch.object(
             discovery, "get_wsl_password", return_value="senha-do-wsl",
-        ):
+        ), mock.patch.object(discovery.os, "name", "nt"):
             self.assertEqual(discovery.get_opencode_password(), "senha-do-wsl")
+
+    def test_off_windows_the_local_cli_is_used(self):
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+            discovery,
+            "resolve_password_command",
+            return_value=["/usr/bin/opencode2", "service", "get", "password"],
+        ), mock.patch.object(
+            discovery, "_run_password_command", return_value="senha-local",
+        ), mock.patch.object(discovery.os, "name", "posix"):
+            self.assertEqual(discovery.get_opencode_password(), "senha-local")
 
     def test_wsl_password_reads_service_json(self):
         payload = '{"password": "  senha-do-wsl  "}'

@@ -655,10 +655,9 @@ def _read_wsl_password() -> str | None:
 def get_opencode_password() -> str | None:
     """Senha do serviço, ou ``None`` se nada responder.
 
-    A ordem é: variável de ambiente, CLI local e — só no Windows — o WSL.
-    O CLI local é tentado mesmo quando falha (o ``opencode.exe`` do scoop
-    existe mas não tem o subcomando ``service``), porque é justamente esse
-    o caso em que o WSL salva: existir não é responder.
+    O pet é WSL-only no Windows: ali o único servidor que interessa é o
+    do WSL, então o CLI local nem é consultado — a ordem é variável de
+    ambiente e WSL. Fora do Windows vale o CLI local, como sempre.
     """
 
     direct = env_password()
@@ -666,23 +665,22 @@ def get_opencode_password() -> str | None:
     if direct:
         return direct
 
+    if os.name == "nt":
+        return get_wsl_password()
+
     command = resolve_password_command()
-
-    if command is not None:
-        password = _run_password_command(command)
-
-        if password:
-            return password
-
-        log.debug("[pet] CLI local não respondeu; tentando o WSL")
-
-    wsl_password = get_wsl_password()
-
-    if wsl_password:
-        return wsl_password
 
     if command is None:
         log.debug("[pet] CLI do opencode não está no PATH")
+
+        return None
+
+    password = _run_password_command(command)
+
+    if password:
+        return password
+
+    log.debug("[pet] CLI local não respondeu")
 
     return None
 

@@ -93,11 +93,12 @@ python pet.py --foreground # colado no terminal (aqui o Ctrl+C funciona)
 
 ### Pet no Windows com o opencode no WSL
 
-Funciona sem configurar nada: a porta do WSL aparece no Windows via
-`wslrelay`, e o pet lê a senha de lá (`wsl` + `~/.opencode/bin/opencode2
-service get password`, com o `service.json` de reserva). Se o pet ficar
-em "conectando", confira o log em `%LOCALAPPDATA%\petwatch\pet.log` e, se
-precisar, fixe a senha uma vez:
+O pet é WSL-only no Windows: o único servidor que ele procura é o do
+WSL. A porta aparece via `wslrelay` e a senha vem de lá (`wsl` +
+`~/.opencode/bin/opencode2 service get password`, com o `service.json`
+de reserva) — o opencode do Windows, se existir, é ignorado. Funciona
+sem configurar nada. Se o pet ficar em "conectando", confira o log em
+`%LOCALAPPDATA%\petwatch\pet.log` e, se precisar, fixe a senha uma vez:
 
 ```powershell
 wsl cat ~/.config/opencode/service.json   # copie o "password"
