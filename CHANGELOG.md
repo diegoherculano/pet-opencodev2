@@ -6,7 +6,59 @@ Todas as mudanças notáveis deste projeto são documentadas aqui, no formato
 
 ## [Unreleased]
 
+### Adicionado
+
+- **Windows.** O mesmo código roda em Linux, macOS e Windows, e sai como um
+  `petwatch.exe` único que não precisa de Python, PySide6 nem plugin de Qt
+  na máquina (`petwatch.spec`, onefile sem console, tema padrão embutido). O
+  build roda no CI em `windows-latest` porque o PyInstaller não faz
+  cross-compile; ver `docs/OPERATION.md`.
+- **A porta do opencode vem da sondagem, não do nome do processo.** Antes,
+  `discovery.py` rodava `ss -ltnp` e casava a linha que continha
+  `"opencode"` — impossível no Windows, onde não há `ss` e o `netstat -ano`
+  devolve PID em vez de nome, e frágil mesmo no Linux (o serviço pode estar
+  num namespace de rede ou com outro nome). Agora o app lista as **portas em
+  escuta** da máquina (`/proc/net/tcp`, `ss -ltn` ou `netstat -ano`, por
+  plataforma) e pergunta a cada uma se é o opencode: `200` **e**
+  `Content-Type: text/event-stream` em `/api/event`, com a senha. O tipo de
+  conteúdo é o que separa o opencode de qualquer outro servidor local — sem
+  ele, o primeiro dev server que respondesse "ok" seria adotado. No Linux a
+  troca também economiza um `fork` a cada 2 s. A lista tem TTL de 10 s, a
+  porta que respondeu é a primeira da próxima varredura, o teto de sondagens
+  mantém o pior caso previsível, e `PETWATCH_PORT` pula a busca.
+- **A instância única do Windows é um named pipe** (`pipe.py`,
+  `instance.py`). Não há `fcntl`, e `os.kill(pid, SIGTERM)` no Windows é
+  `TerminateProcess`: morte seca, sem handler, sem `shutdown()`, sem gravar
+  as preferências. Nome de pipe é exclusivo, então o mesmo mecanismo garante
+  "só um pet" e dá ao `--stop` um caminho limpo — o `quit()` do item
+  **Fechar**, e não um `taskkill`. Quem assume a instância é o filho (o pai
+  só pergunta), porque no Windows não há herança de handle confiável entre
+  processos. A confirmação de que a janela abriu vai por arquivo temporário
+  em vez de pipe, pelo mesmo motivo.
+- **`console.py`**, que faz o app funcionar sem `sys.stdout`: num build
+  `--noconsole` o PyInstaller põe `stdout` e `stderr` em `None`, e um
+  `basicConfig()` sem argumentos manda as mensagens para o `lastResort`, que
+  as descarta **sem avisar**. As frases do `--status`/`--stop` e da falha de
+  abertura viram caixa de diálogo (`MessageBoxW` via `ctypes`, sem
+  dependência nova).
+- Os pets agora são procurados em `$PETWATCH_PETS_DIR`, `pets/` ao lado do
+  executável, `%LOCALAPPDATA%\petwatch\pets` e, por último, os que vieram
+  embutidos no executável. O diretório que existe vence; o resto continua
+  como reserva para `load_theme`. Isso conserta também o `pip install`, que
+  não achava os pets em nenhuma plataforma.
+- `PETWATCH_PORT` para fixar a porta e pular a varredura.
+
 ### Corrigido
+
+- **O primeiro `pet.py` numa máquina sem diretório de estado** respondia
+  "já existe um pet rodando (pid None)", sem pet na tela e sem pista do
+  motivo. `claim()` recebia `FileNotFoundError` do `os.open` porque a pasta
+  ainda não existia, e traduzia "não consegui abrir o arquivo" em "outro pet
+  está rodando" — a leitura que a função faz do erro. Quem assume a instância
+  cria o diretório agora; perguntar (`--status`) continua não deixando
+  rastro. No Windows é o mesmo caso em `%LOCALAPPDATA%\petwatch`.
+- `detached_command()` reexecutava o `pet.py` ao lado do pacote mesmo num
+  build congelado, onde não há script e `sys.executable` é o próprio `.exe`.
 
 - **"Ready" no meio do trabalho** (bug 22), o oposto do bug 21. O relógio
   de silêncio da instância só era movido por eventos que viravam estado **e**

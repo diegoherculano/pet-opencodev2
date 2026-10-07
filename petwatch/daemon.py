@@ -15,6 +15,10 @@ O que muda para quem usa:
 - ``pet.py --status`` diz se há pet rodando e qual é o pid;
 - ``pet.py --foreground`` desfaz tudo e é o modo de depurar.
 
+Quem não tem terminal — o ``petwatch.exe`` compilado sem console — recebe
+as mesmas frases numa caixa de diálogo em vez de vê-las passar depressa.
+Ver :mod:`petwatch.console`.
+
 Duas decisões que não são óbvias:
 
 **O desvio vem antes do ``QApplication``.** O Qt precisa abrir a conexão
@@ -31,7 +35,33 @@ comando percebe o lock ocupado, diz quem está rodando e sai. O lock
 pertence ao descritor aberto, não ao processo: um ``SIGKILL`` no pet faz o
 kernel soltá-lo, e o ``pet.pid`` deixado para trás vira só um número velho
 em vez de um bloqueio eterno. Por isso o arquivo nunca é apagado, e por
-isso a presença do pet é decidida pelo lock, nunca pelo conteúdo.
+isso a presença do pet é decidido pelo lock, nunca pelo conteúdo.
+
+No Windows
+----------
+
+Não há ``fork``, nem ``setsid``, nem ``fcntl``, e ``select.select`` no
+Windows só aceita socket — a espera pelo pipe do processo original morreria
+ali. O desvio equivalente é :func:`spawn_detached`: um ``Popen`` com
+``DETACHED_PROCESS`` e ``CREATE_NO_WINDOW``, que faz a mesma coisa (o
+processo deixa de pertencer ao terminal) com o que a plataforma oferece.
+
+Duas coisas mudam em volta disso, e as duas são consequência de como o
+Windows passa handle entre processos:
+
+- **A confirmação da janela vai por arquivo**, não por pipe. Um handle
+  herdado pelo filho não aparece como descritor nele (o CRT reconstrói a
+  tabela a partir do ``STARTUPINFO``, e só dos três descritores padrão), e
+  um socket exigiria uma porta que o próprio pet precisaria escolher. Um
+  arquivo com um nome só não depende de nenhum desses detalhes.
+- **Quem assume a instância única é o filho**, não o pai. O ``flock``
+  atravessa o ``fork`` por herança; no Windows o caminho é o named pipe
+  (:class:`petwatch.instance.PipeInstance`), e o pai apenas pergunta se
+  há pet antes de lançar o filho.
+
+As duas funções de fluxo ficam em :mod:`petwatch.app`, porque a escolha
+depende de quando o processo assume a instância — que é uma decisão de
+montagem do app, não deste módulo.
 """
 
 from __future__ import annotations
@@ -43,12 +73,14 @@ import logging
 import os
 import select
 import signal
+import subprocess
 import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-from .config import LOG_PATH, PID_PATH
+from .config import BASE_DIR, LOG_PATH, PID_PATH
+from .console import say
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +100,21 @@ READY_ERROR = "erro"
 #: desistir e devolver o terminal mesmo assim. Só o pior caso paga isto: se
 #: a janela abriu, a resposta chega em milissegundos.
 READY_TIMEOUT = 20.0
+
+#: Opção interna do processo solto: "você já é o filho, não desvie de
+#: novo". Fica escondida do ``--help`` porque ninguém deve digitar isso —
+#: quem digitar sobe um pet colado no terminal e sem instância única, que é
+#: exatamente o que o modo solto evita.
+CHILD_FLAG = "--child"
+
+#: Variável de ambiente que diz ao filho onde confirmar a abertura. Um
+#: caminho, e não um descritor: ver o docstring do módulo.
+READY_ENV = "PETWATCH_READY_FILE"
+
+#: De quanto em quanto tempo o processo original olha o arquivo de
+#: confirmação. Só o pior caso paga o prazo inteiro; quando a mensagem já
+#: está no arquivo, a leitura é imediata.
+READY_POLL = 0.05
 
 #: De quanto em quanto tempo ``--stop`` confere se o processo morreu.
 STOP_POLL = 0.1
@@ -134,7 +181,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="diz se há pet rodando; código 1 se não houver",
     )
 
+    # Só o processo solto usa isto, e ele não tem terminal para perguntar:
+    # esconder da ajuda é o que impede alguém de digitar.
+    parser.add_argument(CHILD_FLAG, action="store_true", help=argparse.SUPPRESS)
+
     return parser.parse_args(argv)
+
+
+def ready_file() -> Path | None:
+    """Arquivo onde o filho deve confirmar a abertura, se for o caso."""
+
+    raw = os.environ.get(READY_ENV, "").strip()
+
+    return Path(raw) if raw else None
 
 
 # ------------------------------------------------------------
@@ -167,9 +226,18 @@ class SingleInstance:
         flags = os.O_RDWR | (os.O_CREAT if create else 0)
 
         try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+
             fd = os.open(self.path, flags, 0o644)
 
         except FileNotFoundError:
+            self._fd = None
+
+            return False
+
+        except OSError as exc:
+            log.warning("[pet] não consegui abrir %s: %s", self.path, exc)
+
             self._fd = None
 
             return False
@@ -229,6 +297,43 @@ class SingleInstance:
         os.close(self._fd)
 
         self._fd = None
+
+    def request_stop(self, pid: int | None = None) -> bool:
+        """Manda o ``SIGTERM`` no dono do lock.
+
+        O pedido vai pelo mesmo método que o Windows usa pelo pipe (ver
+        :class:`petwatch.instance.PipeInstance`), para que o ``--stop``
+        seja o mesmo código nas duas plataformas e cada estratégia resolva
+        só a parte dela: como alcançar o processo.
+
+        ``False`` significa "não consegui falar com ele", e o chamador
+        trata cada motivo com a frase que cabe.
+        """
+
+        target = pid if pid is not None else self.owner
+
+        if target is None:
+            return False
+
+        try:
+            os.kill(target, signal.SIGTERM)
+
+        except ProcessLookupError:
+            log.debug("[pet] o pid %s morreu no meio do caminho", target)
+
+            return False
+
+        except PermissionError:
+            log.debug("[pet] sem permissão para o pid %s", target)
+
+            return False
+
+        except OSError as exc:
+            log.debug("[pet] não consegui sinalizar o pid %s: %s", target, exc)
+
+            return False
+
+        return True
 
 
 def _read_pid(fd: int) -> int | None:
@@ -314,7 +419,7 @@ def _try_lock(fd: int) -> bool:
     return True
 
 
-def status_line(instance: SingleInstance, log_path: Path = LOG_PATH) -> str:
+def status_line(instance, log_path: Path = LOG_PATH) -> str:
     """Frase de ``--status``."""
 
     if instance.running():
@@ -323,36 +428,36 @@ def status_line(instance: SingleInstance, log_path: Path = LOG_PATH) -> str:
     return f"[pet] não está rodando. Log: {log_path}"
 
 
-def stop_instance(instance: SingleInstance) -> int:
-    """Manda ``SIGTERM`` no pet que está rodando e espera ele sair.
+def stop_instance(instance, log_path: Path = LOG_PATH) -> int:
+    """Pede para o pet que está rodando encerrar, e espera ele sair.
 
-    ``SIGTERM`` e não ``SIGKILL`` porque o app tem handler para ele: o
-    mesmo caminho de ``quit()`` que o item **Fechar** do menu usa, com a
-    gravação das preferências e a parada da thread do monitor.
+    O encerramento em si é específico da estratégia
+    (:meth:`~petwatch.daemon.SingleInstance.request_stop` no POSIX, o pipe
+    no Windows), mas a espera é a mesma: o pedido só conta como cumprido
+    quando a instância deixa de estar rodando.
+
+    No ``petwatch.exe`` sem console não há terminal para receber a frase,
+    então ``popup=True``: quem abriu o programa por duplo clique precisa
+    **ver** que o pet parou.
     """
 
     if not instance.running():
-        print("[pet] não há pet rodando")
+        say("[pet] não há pet rodando", popup=True)
 
         return 1
 
     pid = instance.owner
 
     if pid is None:
-        print("[pet] o pet está rodando, mas o pid não está no arquivo")
+        say(
+            "[pet] o pet está rodando, mas o pid não está no arquivo",
+            popup=True,
+        )
 
         return 1
 
-    try:
-        os.kill(pid, signal.SIGTERM)
-
-    except ProcessLookupError:
-        print(f"[pet] o pid {pid} morreu no meio do caminho")
-
-        return 1
-
-    except PermissionError:
-        print(f"[pet] sem permissão para mandar sinal ao pid {pid}")
+    if not instance.request_stop(pid):
+        say(f"[pet] não consegui pedir para o pid {pid} encerrar", popup=True)
 
         return 1
 
@@ -360,13 +465,17 @@ def stop_instance(instance: SingleInstance) -> int:
 
     while time.monotonic() < deadline:
         if not instance.running():
-            print(f"[pet] encerrado (pid {pid})")
+            say(f"[pet] encerrado (pid {pid})", popup=True)
 
             return 0
 
         time.sleep(STOP_POLL)
 
-    print(f"[pet] o pid {pid} continua de pé depois de {STOP_TIMEOUT:g}s")
+    say(
+        f"[pet] o pid {pid} continua de pé depois de {STOP_TIMEOUT:g}s. "
+        f"Log: {log_path}",
+        popup=True,
+    )
 
     return 1
 
@@ -462,7 +571,7 @@ def spawn(log_path: Path, work: Callable[[int | None], int]) -> int:
         # Processo original: espera a janela abrir e devolve o terminal.
         os.close(ready_write)
 
-        return _report_result(ready_read, log_path)
+        return _report_result(_read_until_eof(ready_read, READY_TIMEOUT), log_path)
 
     # Primeiro filho. Este fork existe só para abandonar o grupo de jobs do
     # shell: um fork sozinho deixaria o processo como líder de sessão do
@@ -507,8 +616,14 @@ def _fail(ready_write: int, message: str) -> int:
     return 1
 
 
-def report_startup(ready: int | None, error: str | None = None) -> None:
+def report_startup(
+    ready: int | Path | None,
+    error: str | None = None,
+) -> None:
     """Fala com o processo original, que ficou esperando a confirmação.
+
+    O canal é um descritor no POSIX e um caminho de arquivo no Windows
+    (ver o docstring do módulo): os dois carregam a mesma linha.
 
     Fecha o descritor: é o EOF que libera a espera do outro lado, e um
     descritor que ficasse aberto transformaria a confirmação em espera de
@@ -531,6 +646,11 @@ def report_startup(ready: int | None, error: str | None = None) -> None:
 
         message = f"{READY_ERROR} {detail}"
 
+    if isinstance(ready, (str, Path)):
+        _report_startup_file(Path(ready), message)
+
+        return
+
     try:
         os.write(ready, (message + "\n").encode("utf-8", "replace"))
 
@@ -540,13 +660,45 @@ def report_startup(ready: int | None, error: str | None = None) -> None:
         pass
 
 
-def _report_result(ready_read: int, log_path: Path) -> int:
-    """Imprime o que o processo solto disse. Só o original chega aqui."""
+def _report_startup_file(path: Path, message: str) -> None:
+    """Escreve a confirmação no arquivo que o pai está olhando.
 
-    message = _read_until_eof(ready_read, READY_TIMEOUT)
+    Escreve ao lado e troca, pelo mesmo motivo do log: um arquivo pela
+    metade seria lido pelo pai como "falhou" e producing um
+    ``não consegui abrir a janela: petwatch`` sem sentido nenhum.
+    """
+
+    temporary = path.with_name(path.name + ".tmp")
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        temporary.write_text(message + "\n", encoding="utf-8")
+
+        os.replace(temporary, path)
+
+    except OSError as exc:
+        log.debug("[pet] não consegui confirmar a abertura em %s: %s", path, exc)
+
+        try:
+            temporary.unlink(missing_ok=True)
+
+        except OSError:
+            pass
+
+
+def _report_result(message: str | None, log_path: Path) -> int:
+    """Imprime o que o processo solto disse. Só o original chega aqui.
+
+    A falha de abertura é o único caso que abre ``popup``: ela precisa
+    aparecer *agora*, com o processo ainda na tela, senão o sintoma de "não
+    aconteceu nada" seria um duplo clique sem nenhuma pista. Já a
+    confirmação de sucesso é só registro — um popup a cada inicialização
+    seria ruído.
+    """
 
     if message is None:
-        print(
+        say(
             "[pet] em segundo plano, sem confirmação da janela. "
             f"Log: {log_path}"
         )
@@ -556,15 +708,15 @@ def _report_result(ready_read: int, log_path: Path) -> int:
     keyword, _, detail = message.partition(" ")
 
     if keyword == READY_OK:
-        print(f"[pet] rodando em segundo plano (pid {detail}). Log: {log_path}")
+        say(f"[pet] rodando em segundo plano (pid {detail}). Log: {log_path}")
 
-        print(f"[pet] para encerrar: {_program_name()} --stop")
+        say(f"[pet] para encerrar: {_program_name()} --stop")
 
         return 0
 
-    print(f"[pet] não consegui abrir a janela: {detail}", file=sys.stderr)
+    say(f"[pet] não consegui abrir a janela: {detail}", popup=True, error=True)
 
-    print(f"[pet] log: {log_path}", file=sys.stderr)
+    say(f"[pet] log: {log_path}", popup=True, error=True)
 
     return 1
 
@@ -616,4 +768,143 @@ def _flush_streams() -> None:
 def _program_name() -> str:
     """Nome pelo qual o usuário chamou o programa."""
 
+    # Congelado, quem chamou o programa é o executável — e é ele que o
+    # usuário digita no ``--stop``. Testar ``sys.argv[0]`` aqui devolveria
+    # o caminho temporário que o PyInstaller desempacotou.
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).name or "petwatch.exe"
+
     return Path(sys.argv[0]).name or "pet.py"
+
+
+# ------------------------------------------------------------
+# O desvio no Windows
+# ------------------------------------------------------------
+
+#: Cria o processo sem console próprio. ``DETACHED_PROCESS`` é o que tira
+#: o pet do grupo do terminal — é o equivalente ao ``setsid``, e sem ele o
+#: pet morreria junto com a janela do console de quem o abriu.
+DETACHED_PROCESS = 0x00000008
+
+#: Processo novo em grupo próprio. Não é usado para mandar ``Ctrl+Break``
+#: (o pet não tem console, e esse caminho foi descartado por isso), e sim
+#: para o ``--stop`` não precisar de um identificador de job.
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+
+#: Referência aos processos soltos já lançados. Ver :func:`spawn_detached`.
+_detached: list[subprocess.Popen] = []
+
+
+def spawn_detached(log_path: Path) -> int:
+    """Sobe o pet fora do terminal, no Windows.
+
+    É o equivalente de :func:`spawn` com o que a plataforma tem: um
+    ``Popen`` com ``DETACHED_PROCESS``. O filho é **outro processo do mesmo
+    executável** (``--child``), e não uma cópia do atual — no Windows não
+    existe outra forma de ir para segundo plano, e é isso que faz o
+    ``petwatch.exe`` conseguir rodar sem console nenhum.
+
+    O pai espera a confirmação da janela pelo arquivo apontado em
+    :data:`READY_ENV` e só então devolve o terminal; o ``stdin`` do filho
+    aponta para o ``NUL`` do Windows (o :data:`os.devnull` da plataforma),
+    porque um processo sem console de controle não deve ficar esperando
+    leitura de teclado.
+    """
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    rotate_log(log_path)
+
+    confirmation = log_path.with_name(f"pet.ready.{os.getpid()}")
+
+    confirmation.unlink(missing_ok=True)
+
+    log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+
+    try:
+        environment = dict(os.environ)
+
+        environment[READY_ENV] = str(confirmation)
+
+        process = subprocess.Popen(
+            detached_command(),
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=log_fd,
+            stderr=subprocess.STDOUT,
+            close_fds=True,
+            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+        )
+
+    except OSError as exc:
+        os.close(log_fd)
+
+        raise OSError(f"não consegui desviar o processo: {exc}") from exc
+
+    os.close(log_fd)
+
+    # O pai sai logo depois, e o ``Popen`` não é esperado — quem manda na
+    # vida do pet é o pet. A referência fica em uma lista do módulo pelo
+    # mesmo motivo pelo qual o POSIX nunca chama ``wait()``: um objeto
+    # ``Popen`` recolhido com o filho vivo emite ``ResourceWarning``, e o
+    # processo solto é justamente a coisa que o app vai passar a vida
+    # fazendo.
+    _detached.append(process)
+
+    return _report_result(
+        _await_confirmation(confirmation, READY_TIMEOUT),
+        log_path,
+    )
+
+
+def detached_command() -> list[str]:
+    """Comando que sobe o processo solto.
+
+    Numa instalação congelada é o próprio ``petwatch.exe``: não há script
+    para executar, e ``sys.executable`` é o ``.exe``. Numa instalação
+    normal é o ``pet.py`` ao lado do pacote, e num ``pip install``, onde
+    esse arquivo não existe, o que roda é ``-m petwatch`` — por isso o
+    terceiro caminho, e não um caminho único que pareceria mais limpo.
+    """
+
+    if getattr(sys, "frozen", False):
+        return [sys.executable, CHILD_FLAG]
+
+    entry = BASE_DIR / "pet.py"
+
+    if entry.is_file():
+        return [sys.executable, str(entry), CHILD_FLAG]
+
+    return [sys.executable, "-m", "petwatch", CHILD_FLAG]
+
+
+def _await_confirmation(path: Path, timeout: float) -> str | None:
+    """Espera o arquivo de confirmação e devolve a linha.
+
+    ``None`` se o prazo estourar, que é o mesmo resultado do pipe do POSIX:
+    o pet pode ter subido mesmo assim, e a mensagem diz exatamente isso em
+    vez de fingir que falhou.
+    """
+
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace").strip()
+
+        except FileNotFoundError:
+            content = ""
+
+        except OSError as exc:
+            log.debug("[pet] não consegui ler %s: %s", path, exc)
+
+            return None
+
+        if content:
+            path.unlink(missing_ok=True)
+
+            return content
+
+        time.sleep(READY_POLL)
+
+    return None

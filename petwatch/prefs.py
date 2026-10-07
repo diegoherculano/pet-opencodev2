@@ -1,8 +1,14 @@
-"""Preferências do usuário, guardadas em ``~/.config/petwatch/prefs.json``.
+"""Preferências do usuário, num arquivo JSON.
 
 Escopo propositalmente pequeno: só o que o usuário escolhe pelo menu.
 Se o arquivo não existir, estiver corrompido ou for de outra versão, o
 padrão é usado — o pet sempre abre.
+
+O caminho é ``~/.config/petwatch/prefs.json`` no POSIX e
+``%APPDATA%\\petwatch\\prefs.json`` no Windows, ambos resolvidos em
+:func:`petwatch.config.user_config_dir`: é o mesmo arquivo nos dois
+sistemas, e o do Windows é o que o Explorador de Arquivos abre por
+padrão.
 """
 
 from __future__ import annotations
@@ -12,11 +18,12 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from .config import user_config_dir
 from .sizes import DEFAULT_SIZE_KEY
 
 log = logging.getLogger(__name__)
 
-PREFS_PATH = Path.home() / ".config" / "petwatch" / "prefs.json"
+PREFS_PATH = user_config_dir() / "prefs.json"
 
 #: Versão do formato; incompatível cai no padrão em vez de quebrar.
 PREFS_VERSION = 1

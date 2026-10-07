@@ -7,7 +7,7 @@ Como rodar e o que a suíte cobre. Visão geral em [README](../README.md).
 QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests -t .
 ```
 
-572 testes cobrindo o mapeamento de eventos, o parser SSE, a leitura do
+671 testes cobrindo o mapeamento de eventos, o parser SSE, a leitura do
 `pet.json`, a escolha do asset, o transporte HTTP, as consultas de
 pendência e de sessão, o quadro de instâncias, a pilha de balões
 (empilhamento ancorado embaixo, janela fixa, reticências, cor de aviso), a
@@ -70,4 +70,30 @@ detalhes que valem fora do código:
   propósito (a suíte já tem um `QApplication`, então um segundo levanta
   `RuntimeError`) e confere que o motivo chega pelo pipe do processo
   original, em uma linha só, e que o lock é solto mesmo assim.
+
+### O que é específico de plataforma
+
+`tests/test_platform.py` cobre o que só existe no Windows **sem precisar do
+Windows**, e é a razão de o `petwatch` não ter um diretório de código por
+sistema:
+
+- Os **parsers** de porta recebem o texto da listagem e devolvem inteiros, então
+  o formato do `netstat -ano`, do `ss -ltn` e do `/proc/net/tcp` é testado a
+  partir de amostras, no Linux. Inclui o `/proc` em hexadecimal — `1F90` são
+  8080, e ler como decimal não falharia de forma visível: as portas erradas
+  só virariam candidatas a mais.
+- O **protocolo do named pipe** é exercitado inteiro com `AF_UNIX` num
+  diretório temporário: cliente, servidor, handshake com a chave e o caminho
+  do handler que estoura. Se o protocolo quebrar, quebra no Linux.
+- O **`--noconsole`** é reproduzido trocando `sys.stdout` por `None`, que é
+  exatamente o que o PyInstaller faz. Daí saem tanto o `say()` que não
+  estoura sem terminal quanto o `configure_logging()` que não deixa as
+  mensagens caírem no `lastResort`.
+- `assertLogs` com o logger `petwatch` **não** serve para testar o logging
+  configurado: `tests/__init__.py` cala esse pacote inteiro para a saída da
+  suíte ficar limpa. Esses testes usam um logger fora do pacote.
+
+O que fica de fora, e por quê: `DETACHED_PROCESS`, o `msvcrt` e os caminhos
+do registro do Windows só têm significado na plataforma. São conferidos no
+build (`.github/workflows/windows.yml`), não na suíte.
 

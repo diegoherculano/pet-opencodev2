@@ -1,7 +1,9 @@
 """Carregamento do tema de um pet.
 
-Cada tema é um diretório em :data:`petwatch.config.PETS_DIR` contendo um
-``pet.json`` e os assets. Exemplo de ``pets/matrix/pet.json``::
+Cada tema é um diretório numa das pastas de
+:func:`petwatch.config.pets_candidates` — a do usuário primeiro, a que veio
+no executável depois — contendo um ``pet.json`` e os assets. Exemplo de
+``pets/matrix/pet.json``::
 
     {
         "id": "matrix",
@@ -30,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from .config import PETS_DIR
+from .config import PETS_DIR, pets_candidates
 
 log = logging.getLogger(__name__)
 
@@ -297,21 +299,46 @@ class PetTheme:
         theme.line_gap = int(text.get("line_gap", theme.line_gap))
 
 
+def theme_search_dirs() -> list[Path]:
+    """Pastas onde um tema pode estar, em ordem de preferência.
+
+    A primeira é onde o usuário instalou os pets; a segunda é a que veio
+    dentro do ``petwatch.exe``, que carrega só o tema padrão. A segunda
+    nunca chega à frente da primeira de propósito: se o usuário tem a
+    coleção inteira no disco, o que ele ver no seletor é a coleção, e não
+    uma lista de dois itens.
+    """
+
+    return pets_candidates()
+
+
 def load_theme(name: str) -> PetTheme:
     """Carrega o tema ``name`` de ``pets/``."""
 
-    directory = PETS_DIR / name
+    for directory in theme_search_dirs():
+        candidate = directory / name
 
-    if not directory.exists():
-        raise ThemeNotFoundError(f"Tema não encontrado: {directory}")
+        if candidate.is_dir():
+            return PetTheme.from_directory(candidate)
 
-    return PetTheme.from_directory(directory)
+    raise ThemeNotFoundError(f"Tema não encontrado: {PETS_DIR / name}")
 
 
 def list_themes() -> list[str]:
-    """Nomes de todos os temas disponíveis, em ordem alfabética."""
+    """Nomes de todos os temas disponíveis, em ordem alfabética.
 
-    if not PETS_DIR.exists():
-        return []
+    A união de todas as pastas: quem tem os 1738 pets no disco e o tema
+    padrão embutido vê 1738 (o nome repetido some), e quem não tem nenhum
+    vê ao menos o que veio no executável — senão o seletor abriria vazio
+    num ``.exe`` novo, sem nenhuma pista do que fazer.
+    """
 
-    return sorted(entry.name for entry in PETS_DIR.iterdir() if entry.is_dir())
+    names: set[str] = set()
+
+    for directory in theme_search_dirs():
+        if not directory.is_dir():
+            continue
+
+        names.update(entry.name for entry in directory.iterdir() if entry.is_dir())
+
+    return sorted(names)

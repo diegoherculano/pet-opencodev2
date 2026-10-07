@@ -13,6 +13,7 @@ import contextlib
 import errno
 import io
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -223,6 +224,48 @@ class SingleInstanceTests(unittest.TestCase):
 
         self.assertEqual(PID_PATH.name, "pet.pid")
         self.assertEqual(PID_PATH.parent, LOG_PATH.parent)
+
+
+class FreshMachineTests(unittest.TestCase):
+    """O primeiro ``pet.py`` numa máquina sem diretório de estado.
+
+    O sintoma era ``já existe um pet rodando (pid None)``, sem pet na tela:
+    o ``claim()`` recebia ``FileNotFoundError`` do ``os.open`` porque o
+    diretório ainda não existia, e traduzia "não consigo abrir o arquivo"
+    em "outro pet está rodando" — a leitura que a função faz do erro. No
+    Windows é o mesmo caso em ``%LOCALAPPDATA%\\petwatch``, que só existe
+    depois do primeiro arranque.
+    """
+
+    def setUp(self):
+        self.directory = Path(tempfile.mkdtemp(prefix="petwatch-fresh-")) / "novo"
+
+        self.addCleanup(shutil.rmtree, self.directory.parent, True)
+
+    def test_the_first_claim_on_a_clean_machine_works(self):
+        self.assertFalse(self.directory.exists())
+
+        instance = SingleInstance(self.directory / "pet.pid")
+
+        self.addCleanup(instance.release)
+
+        self.assertTrue(instance.claim())
+
+    def test_the_state_directory_is_created_by_the_claim(self):
+        self.assertFalse(self.directory.exists())
+
+        SingleInstance(self.directory / "pet.pid").claim()
+
+        self.assertTrue(self.directory.is_dir())
+
+    def test_asking_on_a_clean_machine_says_nobody_is_running(self):
+        """``running()`` não pode deixar rastro: ele é só uma pergunta."""
+
+        instance = SingleInstance(self.directory / "pet.pid")
+
+        self.assertFalse(instance.running())
+
+        self.assertFalse(self.directory.exists())
 
 
 class NoFlockTests(unittest.TestCase):

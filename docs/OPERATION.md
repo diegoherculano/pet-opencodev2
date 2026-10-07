@@ -55,8 +55,120 @@ $ python pet.py
 ```
 
 **Onde o log mora.** `~/.local/state/petwatch/pet.log`, respeitando
-`XDG_STATE_HOME`, com `--log` para mudar. Ele passa de 1 MiB e é virado para
+`XDG_STATE_HOME`, com `--log` para mudar. No Windows é
+`%LOCALAPPDATA%\petwatch\pet.log`. Ele passa de 1 MiB e é virado para
 `pet.log.1` — uma geração só, o suficiente para o log do processo anterior.
+
+## Windows
+
+No Windows o mesmo código roda das duas maneiras: instalado com `pip` e
+`python -m petwatch`, ou como `petwatch.exe`, um arquivo único que não
+precisa de Python, de PySide6 nem de nenhum plugin do Qt na máquina.
+
+```powershell
+python -m petwatch             # instalado, com terminal
+petwatch.exe                   # o .exe, por duplo clique
+petwatch.exe --status          # responde numa caixa de diálogo
+petwatch.exe --stop
+```
+
+### O .exe
+
+```powershell
+py -3 -m pip install pyinstaller
+py -3 -m PyInstaller petwatch.spec --noconfirm
+```
+
+O build **precisa rodar no Windows**: o PyInstaller não faz cross-compile, e
+o bootloader do executável é o da plataforma que o construiu. De WSL dá para
+chamar o Python do Windows —
+
+```bash
+powershell.exe -NoProfile -Command "py -3 -m PyInstaller petwatch.spec --noconfirm"
+```
+
+— mas o repositório precisa estar num caminho que o Windows veja (`C:\...`, e
+não `/home/...`). O CI faz isso em `windows-latest`
+(`.github/workflows/windows.yml`).
+
+O `petwatch.spec` monta um `onefile` **sem console**. Um processo solto é um
+pet de desktop: uma janela de console preta ao lado dele seria o oposto do
+que o programa promete. O que o terminal perdia — as frases do `--status` e
+do `--stop`, que um duplo clique não tem onde mostrar — vira caixa de diálogo
+(`petwatch/console.py`), e só nesses casos: o lançamento normal não abre
+popup nenhum.
+
+Um efeito colateral do `--noconsole` que vale mais uma linha: o PyInstaller
+põe `sys.stdout` e `sys.stderr` em `None`, e um `logging.basicConfig()` sem
+argumentos cria um `StreamHandler` para um `stderr` que não existe. As
+mensagens caem no `lastResort`, que **as descarta sem avisar** — o sintoma
+seria um pet funcionando com um log vazio e nenhum erro na tela. Por isso
+`configure_logging()` monta o handler à mão e aponta para o arquivo.
+
+### Os pets
+
+Os 62 MB dos 1738 temas não entram no executável: dentro do `onefile` eles
+seriam extraídos para `%TEMP%` a cada arranque, e "adicionar um pet" viraria
+"recompilar". O `petwatch.exe` embute só o tema padrão (`eevee`, ~25 KB), e os
+pets do usuário são procurados nesta ordem:
+
+1. `$PETWATCH_PETS_DIR`
+2. `pets/` ao lado do `.exe`
+3. `%LOCALAPPDATA%\petwatch\pets`
+4. os que vieram embutidos no executável
+
+O diretório que **existe** vence, e o resto continua servindo de reserva para
+`load_theme` — é isso que permite um `.exe` novo ter o que abrir sem inventar
+um segundo caminho para a coleção.
+
+### O que mudou dentro do app
+
+Quatro decisões que são do Windows e não têm equivalente no POSIX.
+
+**A porta não vem de `ss`.** Não existe `ss -ltnp` no Windows, e o
+`netstat -ano` devolve PID, não nome — casar por nome exigiria um `tasklist`
+por processo e continuaria frágil: o serviço pode se chamar `opencode.exe`,
+`opencode-ai.exe`, `bun.exe`, estar num namespace de rede ou num container. A
+descoberta agora pergunta **qual das portas em escuta é o opencode**, e a
+resposta vem do próprio servidor: `200` **e** `Content-Type:
+text/event-stream` em `/api/event`, com a senha. Quem não for o opencode
+devolve 404, 401 ou HTML, e a sondagem é sempre em `127.0.0.1`. Isso também
+simplificou o Linux, que agora lê `/proc/net/tcp` em vez de forkar um `ss` a
+cada dois segundos.
+
+**A instância única é um named pipe.** Não há `fcntl`, e `os.kill(pid,
+SIGTERM)` no Windows é `TerminateProcess` — morte seca, sem handler, sem
+`shutdown()`, sem gravar as preferências. O pipe resolve as duas coisas:
+nome é exclusivo, então o primeiro que abre o nome é o dono da instância, e é
+por ele que o `--stop` chega ao caminho limpo do menu (o mesmo `quit()` do
+item **Fechar**). O `CTRL_BREAK_EVENT`, que seria o sinal de verdade, foi
+descartado: exige que o filho divida o console do pai, que é justamente a
+janela preta que o `--noconsole` elimina.
+
+**Quem assume a instância é o filho, não o pai.** O `flock` atravessa o
+`fork` por herança; no Windows não há herança de handle confiável entre
+processos, então o processo original apenas *pergunta* se há pet rodando e
+lança o filho com `--child`. A janela entre a pergunta e a resposta é de
+poucos milissegundos e não tem consequência: se dois `petwatch.exe`
+disparados no mesmo instante passarem os dois, o segundo filho falha ao
+assumir o pipe e sai com código 1 dizendo que já existe um pet.
+
+**A confirmação da janela vai por arquivo.** Um handle herdado pelo filho não
+aparece como descritor nele — o CRT reconstrói a tabela a partir do
+`STARTUPINFO`, e só dos três descritores padrão — então o filho escreveria
+num número que o pai não enxerga. Um arquivo temporário com um nome só não
+depende de nenhum desses detalhes, e a falha de abertura chega na tela
+inteira: é o que evita o sintoma de "não aconteceu nada" com o traceback num
+arquivo que ninguém sabe que existe.
+
+Os diretórios seguem a plataforma: `%LOCALAPPDATA%\petwatch` para o estado e
+o log, `%APPDATA%\petwatch\prefs.json` para as preferências. `~/.config` e
+`~/.local/state` são convenções que ninguém adota no Windows.
+
+**O "sempre no topo" funciona no Windows.** No Wayland o flag é aceito e
+descartado (é o caso do WSLg, e o item do menu fica desativado com o motivo
+na dica); no Windows ele vira `WS_EX_TOPMOST` e o gerenciador de janelas
+honra.
 
 ## Menu (botão direito)
 

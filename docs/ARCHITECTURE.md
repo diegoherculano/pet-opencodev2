@@ -38,12 +38,12 @@ do sprite, e o **aviso colorido** é só do balão que espera resposta.
 | Módulo | Responsabilidade |
 | --- | --- |
 | `config.py` | Constantes, timeouts e caminhos |
-| `daemon.py` | Segundo plano: fork, log, instância única, `--stop` |
+| `daemon.py` | Segundo plano: fork (POSIX) ou `Popen` detached (Windows), log e `--stop` |
 | `states.py` | Os quatro estados e seus rótulos |
 | `theme.py` | Lê `pet.json` e resolve o caminho do sprite |
 | `assets.py` | Escolhe o primeiro asset que o Qt consegue decodificar |
 | `http.py` | Transporte do stream, com leitura interrompível |
-| `discovery.py` | Senha via CLI, portas via `ss`, sondagem do servidor |
+| `discovery.py` | Senha via CLI, portas em escuta, sondagem do servidor |
 | `sse.py` | Parser do stream `text/event-stream` |
 | `events.py` | Regras declarativas de evento → estado, e os gatilhos de pedido |
 | `pending.py` | Consultas de pendência e de sessão ao servidor v2 |
@@ -51,6 +51,9 @@ do sprite, e o **aviso colorido** é só do balão que espera resposta.
 | `idle.py` | Watchdog: volta para "pronto" se o opencode silenciar |
 | `sizes.py` | Presets de tamanho, com a pilha de balões e a escala do texto |
 | `prefs.py` | Preferências persistidas |
+| `console.py` | Saída e log quando não há terminal (o `.exe` é sem console) |
+| `pipe.py` | Named pipe: instância única e encerramento no Windows |
+| `instance.py` | A estratégia de instância única da plataforma |
 | `ui/attention.py` | Pulso de "precisa de você" no estado de espera |
 | `ui/menu.py` | Menu do botão direito |
 | `ui/pet_picker.py` | Seletor de pet em grade de miniaturas, com busca e paginação |
@@ -59,6 +62,28 @@ do sprite, e o **aviso colorido** é só do balão que espera resposta.
 | `ui/pet_widget.py` | Janela, sprite, arrasto |
 | `ui/tray.py` | Ícone na bandeja (a janela é `Qt.Tool`, sem barra de tarefas) |
 | `app.py` | Montagem, posicionamento e encerramento |
+
+### Onde a porta do opencode vem
+
+A porta não é configurada em lugar nenhum, e o nome do processo não é usado
+para achá-la. `discovery.py` lista as **portas em escuta** da máquina —
+`/proc/net/tcp` no Linux, `ss -ltn` nos outros POSIX, `netstat -ano -p tcp`
+no Windows — e pergunta a cada uma se é o opencode: um `GET /api/event` com
+a senha que responda `200` **e** `Content-Type: text/event-stream`.
+
+A pergunta é melhor que a alternativa por três motivos, e vale nas duas
+plataformas. O nome do processo muda entre instalações (`opencode`,
+`opencode2`, `opencode.exe`, `bun.exe`) e o serviço pode estar em outro
+namespace de rede (WSL, container), então casar por ele erra justo nos casos
+que mais importam. E o tipo de conteúdo separa o opencode de qualquer
+outro servidor local: sem ele, o primeiro dev server que dissesse "ok" em
+toda rota seria adotado como opencode.
+
+A lista tem TTL de 10 s e a porta que respondeu é a primeira da próxima
+varredura, porque o monitor reconecta a cada 2 s — reler a lista toda vez
+custaria um subprocesso por ciclo no Windows sem comprar nada. O teto de
+sondagens mantém o pior caso previsível numa máquina com muitos servidores.
+`PETWATCH_PORT` pula a busca inteira.
 
 `events.py` é a parte mais sensível: os nomes dos eventos foram conferidos
 contra os literais do bundle do opencode instalado (não contra

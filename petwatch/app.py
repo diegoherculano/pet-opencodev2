@@ -7,20 +7,30 @@ import signal
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt, Slot
+from PySide6.QtCore import QThread, Qt, Signal, Slot
 from PySide6.QtWidgets import QApplication
 
-from .config import DEFAULT_THEME, PID_PATH, SCREEN_GAP_X, SCREEN_GAP_Y
+from .config import (
+    DEFAULT_THEME,
+    IS_WINDOWS,
+    PID_PATH,
+    SCREEN_GAP_X,
+    SCREEN_GAP_Y,
+)
+from .console import configure_logging, say
 from .daemon import (
-    SingleInstance,
+    _program_name,
     parse_args,
+    ready_file,
     report_startup,
     spawn,
+    spawn_detached,
     status_line,
     stop_instance,
 )
 from .discovery import get_opencode_password
 from .idle import IdleWatchdog
+from .instance import open_instance, serve_quit
 from .monitor import OpenCodeMonitor
 from .prefs import load_prefs, save_prefs
 from .sessions import SessionBoard, StatusPoller
@@ -39,11 +49,29 @@ SHUTDOWN_GRACE_MS = 5000
 SHUTDOWN_FORCE_MS = 1000
 
 #: Sinais tratados para encerrar em vez de levantar traceback.
-QUIT_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+#:
+#: No POSIX são ``SIGINT`` (``Ctrl+C``) e ``SIGTERM``, que é o que o
+#: ``--stop`` manda. No Windows o ``SIGTERM`` **não entra**: lá ele é
+#: ``TerminateProcess``, e um handler para ele seria uma promessa que o
+#: sistema não cumpre — o processo morre sem rodar uma linha do handler.
+#: O que substitui o ``--stop`` é o named pipe (ver
+#: :mod:`petwatch.instance`); o que substitui o ``Ctrl+C`` é o
+#: ``SIGBREAK``, que existe só nesta plataforma.
+QUIT_SIGNALS = (
+    (signal.SIGINT, getattr(signal, "SIGBREAK", signal.SIGINT))
+    if IS_WINDOWS
+    else (signal.SIGINT, signal.SIGTERM)
+)
 
 
 class PetApplication(QApplication):
     """Aplica o tema, liga o monitor e cuida do encerramento."""
+
+    #: Alguém pediu encerramento de fora — hoje, só o named pipe do Windows.
+    #: É um sinal, e não uma chamada a :meth:`quit`, porque o pedido chega
+    #: numa thread que não é a da interface e o ``quit()`` toca no event
+    #: loop. É o mesmo encanamento do monitor e do poll.
+    stop_requested = Signal()
 
     def __init__(
         self,
@@ -271,6 +299,14 @@ class PetApplication(QApplication):
         # --------------------------------------------------------
 
         self.aboutToQuit.connect(self.shutdown)
+
+        # ``QueuedConnection`` porque o emissor é o thread do pipe: o
+        # ``quit()`` precisa rodar na thread do event loop, e é o que faz
+        # o ``shutdown()`` (que para o monitor) rodar dentro dele também.
+        self.stop_requested.connect(
+            self.quit,
+            Qt.ConnectionType.QueuedConnection,
+        )
 
         install_quit_signals(self)
 
@@ -701,25 +737,31 @@ def install_quit_signals(app: QApplication) -> None:
 
 def run_app(
     options,
-    instance: SingleInstance,
-    ready: int | None = None,
+    instance,
+    ready: int | Path | None = None,
 ) -> int:
     """Sobe o aplicativo e espera ele fechar.
 
     Este é o corpo do processo: tanto o que roda colado no terminal
     (``--foreground``) quanto o processo solto chegam aqui, e por isso o
     ``logging`` é configurado aqui — no modo solto os descritores já foram
-    apontados para o log, então o mesmo ``basicConfig`` serve para os dois.
+    apontados para o log, então o mesmo destino serve para os dois; e sem
+    console (``petwatch.exe``) o destino é o arquivo.
     """
 
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    configure_logging()
 
     try:
         # O pid gravado tem que ser o do processo que fica de pé, então
-        # ``record_pid`` só pode vir depois do fork.
+        # ``record_pid`` só pode vir depois do desvio.
         instance.record_pid()
 
         app = PetApplication()
+
+        # Quem pode pedir encerramento vem pelo mesmo caminho do menu.
+        # No POSIX existe o sinal; no Windows, o pipe — e o pipe entrega
+        # por sinal, porque o pedido sai de outra thread.
+        serve_quit(instance, app.stop_requested.emit)
 
         # O processo original está esperando isto para devolver o terminal.
         report_startup(ready)
@@ -735,7 +777,7 @@ def run_app(
         raise
 
     finally:
-        # Solta o lock, para o próximo ``python pet.py`` conseguir rodar.
+        # Solta a instância, para o próximo ``python pet.py`` conseguir rodar.
         instance.release()
 
 
@@ -744,27 +786,52 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     Sem opção nenhuma o processo vai para segundo plano e o terminal volta
     na hora; ``--foreground`` roda colado, que é o modo de depurar.
+
+    A diferença entre as plataformas está em **quem** assume a instância
+    única, e só isso. No POSIX o processo original toma o ``flock`` e o
+    filho o herança pelo ``fork``; no Windows não há herança de handle
+    confiável entre processos, então o original apenas pergunta se há pet
+    rodando e quem assume é o filho, que já sobe com ``--child``. O
+   filho responde "já tem" pelo mesmo ``claim()`` que falha.
     """
 
     options = parse_args(argv)
 
-    instance = SingleInstance(PID_PATH)
+    instance = open_instance(PID_PATH)
 
     if options.status:
-        print(status_line(instance, options.log))
+        line = status_line(instance, options.log)
+
+        say(line, popup=True)
 
         return 0 if instance.running() else 1
 
     if options.stop:
-        return stop_instance(instance)
+        return stop_instance(instance, options.log)
+
+    if IS_WINDOWS:
+        return _windows(options, instance)
+
+    return _posix(options, instance)
+
+
+def _already_running(instance) -> int:
+    """A frase de "já tem pet", e o código de quem só avisa."""
+
+    say(
+        f"[pet] já existe um pet rodando (pid {instance.owner}). "
+        f"Para encerrá-lo: {_program_name()} --stop",
+        popup=True,
+    )
+
+    return 0
+
+
+def _posix(options, instance) -> int:
+    """Fluxo original: o lock é tomado aqui e atravessa o ``fork``."""
 
     if not instance.claim():
-        print(
-            f"[pet] já existe um pet rodando (pid {instance.owner}). "
-            "Para encerrá-lo: pet.py --stop"
-        )
-
-        return 0
+        return _already_running(instance)
 
     if options.foreground:
         return run_app(options, instance)
@@ -772,3 +839,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     # O lock fica com o processo solto: ele herdou o descritor, e o pai sai
     # sem soltá-lo. Quem garante a instância única é o lock, não o prompt.
     return spawn(options.log, lambda ready: run_app(options, instance, ready))
+
+
+def _windows(options, instance) -> int:
+    """Fluxo do Windows: o original pergunta, o filho assume."""
+
+    if options.child:
+        # Este é o processo solto. Quem garante a instância única é o pipe,
+        # e ele é assumido aqui — no pai não haveria handle confiável para
+        # chegar até este processo.
+        if not instance.claim():
+            return _already_running(instance)
+
+        return run_app(options, instance, ready_file())
+
+    if instance.running():
+        return _already_running(instance)
+
+    if options.foreground:
+        # Colado no terminal assume a instância aqui e segura até o fim.
+        if not instance.claim():
+            return _already_running(instance)
+
+        return run_app(options, instance)
+
+    return spawn_detached(options.log)

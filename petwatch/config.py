@@ -2,34 +2,181 @@
 
 Os valores aqui são os mesmos do monólito original (``pet.py``); a
 separação existe apenas para que cada módulo dependa do que precisa.
+
+Os caminhos seguem a plataforma em duas regras:
+
+- **POSIX** continua no XDG, como sempre (``$XDG_STATE_HOME``,
+  ``$XDG_DATA_HOME``, ``~/.config``);
+- **Windows** usa os diretórios que o próprio sistema já cria
+  (``%LOCALAPPDATA%``, ``%APPDATA%``), porque ``~/.config`` ali é uma
+  convenção que ninguém adota — e ``%LOCALAPPDATA%`` é o lugar que o
+  explorador de arquivos abre por padrão.
+
+O que decide o resto é o caminho dos pets, que é o único dado que o
+usuário instala à mão (ver :func:`pets_candidates`).
 """
 
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
+
+#: Nome da pasta do usuário, em todas as plataformas.
+APP_NAME = "petwatch"
+
+#: Windows? Decide ``msvcrt``, named pipe e ``DETACHED_PROCESS``.
+IS_WINDOWS = sys.platform == "win32"
+
+#: O app está congelado num ``petwatch.exe`` pelo PyInstaller.
+FROZEN = bool(getattr(sys, "frozen", False))
+
+#: Onde o PyInstaller desempacota o executável congelado. Só existe no
+#: build — é o que permite embutir o tema padrão dentro do ``.exe``.
+BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", "")) if FROZEN else None
+
 
 # ------------------------------------------------------------
 # Caminhos
 # ------------------------------------------------------------
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+def _windows_appdata(variable: str, *fallback: str) -> Path:
+    """``%LOCALAPPDATA%`` / ``%APPDATA%``, com um caminho de reserva.
 
-PETS_DIR = BASE_DIR / "pets"
+    A reserva cobre a máquina sem as variáveis — elas existem desde o
+    Vista, mas um serviço pode rodar sem o perfil do usuário montado.
+    """
 
-#: Estado do processo solto: o lock/pid da instância e o log. Fora de
-#: ``BASE_DIR`` de propósito — o estado é do usuário, não do código, e o
-#: diretório do projeto pode ser somente leitura.
-STATE_DIR = (
-    Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
-    / "petwatch"
+    value = os.environ.get(variable, "").strip()
+
+    if value:
+        return Path(value)
+
+    return Path.home().joinpath(*fallback)
+
+
+def user_state_dir() -> Path:
+    """Onde fica o estado do processo solto (lock, log, chave do pipe).
+
+    Fora de :data:`BASE_DIR` de propósito — o estado é do usuário, não do
+    código, e o diretório do projeto pode ser somente leitura.
+    """
+
+    if IS_WINDOWS:
+        return _windows_appdata("LOCALAPPDATA", "AppData", "Local") / APP_NAME
+
+    base = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state"
+
+    return Path(base) / APP_NAME
+
+
+def user_config_dir() -> Path:
+    """Onde ficam as preferências."""
+
+    if IS_WINDOWS:
+        return _windows_appdata("APPDATA", "AppData", "Roaming") / APP_NAME
+
+    return Path.home() / ".config" / APP_NAME
+
+
+def user_data_dir() -> Path:
+    """Onde o app guarda dados que o usuário pode substituir.
+
+    No Windows é o mesmo ``%LOCALAPPDATA%`` do estado: os pets são
+    descartáveis e pesados, e o usuário espera que "apagar dados do app"
+    leve junto.
+    """
+
+    if IS_WINDOWS:
+        return _windows_appdata("LOCALAPPDATA", "AppData", "Local") / APP_NAME
+
+    base = os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
+
+    return Path(base) / APP_NAME
+
+
+#: A raiz do código. Num build congelado é a pasta do próprio ``.exe`` —
+#: ``__file__`` aponta para dentro de ``_MEIPASS``, que é temporário e não
+#: serve para procurar dados do usuário.
+BASE_DIR = (
+    Path(sys.executable).resolve().parent
+    if FROZEN
+    else Path(__file__).resolve().parent.parent
 )
+
+STATE_DIR = user_state_dir()
+
+
+def ensure_state_dir() -> Path:
+    """Cria o diretório de estado, se ainda não existir.
+
+    Quem chama é quem **assume** a instância — nunca quem só pergunta.
+    Sem isto, o primeiro ``pet.py`` numa máquina nova recebia
+    ``FileNotFoundError`` ao abrir o ``pet.pid``, e o ``claim()`` traduzia
+    isso em "outro pet está rodando": a mensagem ``já existe um pet rodando
+    (pid None)``, sem pet na tela e sem pista do motivo. O mesmo valeria no
+    Windows, onde ``%LOCALAPPDATA%\\petwatch`` só existe depois do primeiro
+    arranque.
+    """
+
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    return STATE_DIR
 
 #: Lock de instância única; o conteúdo é o pid de quem está rodando.
 PID_PATH = STATE_DIR / "pet.pid"
 
 #: Onde vai a saída quando o processo não tem mais terminal.
 LOG_PATH = STATE_DIR / "pet.log"
+
+# ------------------------------------------------------------
+# Os pets
+# ------------------------------------------------------------
+
+#: Aponta a pasta de pets para outro lugar, para quem instala o
+#: ``.exe`` num disco que não é o do perfil.
+PETS_DIR_ENV = "PETWATCH_PETS_DIR"
+
+
+def pets_candidates() -> list[Path]:
+    """Pastas onde os pets podem estar, em ordem de preferência.
+
+    A primeira que existir vence, e as outras continuam servindo como
+    *fallback* para :func:`petwatch.theme.load_theme` — é o que permite
+    embutir o tema padrão no ``.exe`` sem tirar a coleção do usuário do
+    lugar dela.
+    """
+
+    candidates: list[Path] = []
+
+    override = os.environ.get(PETS_DIR_ENV, "").strip()
+
+    if override:
+        candidates.append(Path(override).expanduser())
+
+    candidates.append(BASE_DIR / "pets")
+
+    candidates.append(user_data_dir() / "pets")
+
+    if BUNDLE_DIR is not None:
+        candidates.append(BUNDLE_DIR / "pets")
+
+    # A primeira pasta sempre é a resposta mesmo que não exista: assim o
+    # erro de "pets não instalados" aponta para um caminho real em vez de
+    # ``None``.
+    return list(dict.fromkeys(candidates))
+
+
+PETS_DIR = next(
+    (path for path in pets_candidates() if path.is_dir()),
+    pets_candidates()[0],
+)
+
+#: Os pets que vieram dentro do executável. Só existe no build congelado,
+#: e carrega o tema padrão (ver ``petwatch.spec``): um ``.exe`` sem nenhum
+#: pet não abre, porque :func:`petwatch.app.PetApplication` cai no tema
+#: padrão justamente quando o escolhido não existe.
+BUNDLED_PETS_DIR = BUNDLE_DIR / "pets" if BUNDLE_DIR is not None else None
 
 # ------------------------------------------------------------
 # Conexão com o opencode
@@ -43,19 +190,51 @@ USERNAME = "opencode"
 
 RECONNECT_DELAY = 2.0
 
-#: Comando usado para obter a senha do serviço local.
+#: Comando usado para obter a senha do serviço local. É o *nome* do
+#: executável: o :mod:`petwatch.discovery` resolve o caminho real, porque
+#: no Windows o opencode chega como ``opencode2.exe`` (ou ``.cmd``, que o
+#: ``CreateProcess`` não executa sem shell) e o ``PATH`` do usuário não é o
+#: do processo solto.
 PASSWORD_COMMAND = ("opencode2", "service", "get", "password")
 
 PASSWORD_TIMEOUT = 5.0
 
-#: Timeout do ``ss -ltnp`` usado na descoberta de portas.
+#: Timeout da listagem de portas em escuta (``ss``, ``netstat`` ou a
+#: leitura de ``/proc/net/tcp``).
 PORT_SCAN_TIMEOUT = 3.0
 
 #: Timeout do socket na checagem de vida do servidor.
 PROBE_CONNECT_TIMEOUT = 1.5
 
-#: Timeout do GET de sondagem em ``/api/event``.
+#: Timeout do GET de sondagem em ``/api/event``, para uma porta já
+#: conhecida — por exemplo a que respondeu na tentativa anterior.
 PROBE_REQUEST_TIMEOUT = 3.0
+
+#: Timeout do GET de sondagem durante a varredura. Menor, porque aqui a
+#: porta é uma aposta, e quem responde rápido corta a varredura: a
+#: diferença entre um ciclo de dois segundos e um de meio minuto.
+SWEEP_REQUEST_TIMEOUT = 1.0
+
+#: De quanto em quanto tempo a lista de portas em escuta é relida. Ela
+#: muda quando o opencode abre ou fecha uma *location*, e o monitor
+#: reconecta a cada ``RECONNECT_DELAY`` — reler a cada tentativa custaria
+#: um subprocesso por ciclo no Windows, sem comprar nada.
+PORTS_TTL_SECONDS = 10.0
+
+#: Teto de portas sondadas por varredura. A sondagem é uma aposta, e
+#: ganha quem responde: um teto mantém o pior caso previsível numa máquina
+#: com muitos servidores locais, sem custo no caso normal (o opencode
+#: responde na primeira ou na segunda).
+MAX_SWEEP_PORTS = 48
+
+#: Teto de linhas de escuta lidas antes de desistir da varredura. Só o
+#: teto de leitura é generoso: ele segura o ``/proc/net/tcp`` de uma
+#: máquina com NAT e o ``netstat`` de um servidor cheio.
+MAX_LISTENERS = 512
+
+#: Porta fixa, para quem não quer que o pet procure nada (o opencode num
+#: host de outro lado de um port-forward, por exemplo).
+PORT_ENV = "PETWATCH_PORT"
 
 #: Timeout do stream SSE de eventos.
 STREAM_TIMEOUT = 30.0

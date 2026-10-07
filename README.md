@@ -15,14 +15,19 @@ um balão por sessão em ação.
 - Um balão por sessão do opencode em ação, com o nome da sessão
 - "Aguardando resposta" verificado no servidor — nunca chutado do stream
 - Roda em segundo plano: o prompt volta na hora, `--status` / `--stop`
+- Windows e Linux: o mesmo código, e um `petwatch.exe` que não precisa de Python
 - Eevee incluso; pacote opcional com 1738 temas, seletor com busca, 3 tamanhos, sempre no topo, ícone na bandeja
 - Só lê: nenhum `POST`/`DELETE`, então não responde nem interrompe nada
 
 ## Requisitos
 
-- Python >= 3.11 e Linux com Qt (PySide6)
+- Python >= 3.11 com Qt (PySide6), em Linux, macOS ou Windows
 - Servidor `opencode` local rodando
 - No Ubuntu, o plugin de WebP do Qt: `sudo apt install qt6-image-formats-plugins`
+  (nos wheels do PySide6 ele já vem junto; no Windows o `.exe` carrega o seu)
+
+Quem não quiser instalar nada no Windows pode baixar o `petwatch.exe`: um
+arquivo único, sem Python, sem PySide6 e sem plugin de Qt na máquina.
 
 ## Instalação
 
@@ -49,6 +54,26 @@ Sem instalar também funciona, direto da fonte:
 python pet.py            # ou: python -m petwatch
 ```
 
+### Windows
+
+```powershell
+pip install -e .
+python -m petwatch
+```
+
+Ou o executável único, que não depende de nada instalado:
+
+```powershell
+py -3 -m pip install pyinstaller
+py -3 -m PyInstaller petwatch.spec --noconfirm   # -> dist\petwatch.exe
+```
+
+O build precisa rodar no Windows — o PyInstaller não faz cross-compile — e o
+CI o faz em `windows-latest`. Os 1738 pets são opcionais nos dois sistemas:
+o `.exe` embute só o tema padrão, e a coleção completa é procurada em
+`pets/` ao lado do executável, em `%LOCALAPPDATA%\petwatch\pets` ou no que
+`$PETWATCH_PETS_DIR` apontar.
+
 ## Uso
 
 ```bash
@@ -59,14 +84,20 @@ python pet.py --foreground # colado no terminal (aqui o Ctrl+C funciona)
 ```
 
 - **Botão esquerdo** arrasta o pet · **botão direito** abre o menu
-- Log em `~/.local/state/petwatch/pet.log`, prefs em `~/.config/petwatch/prefs.json`
+- Log em `~/.local/state/petwatch/pet.log` (Linux/macOS) ou
+  `%LOCALAPPDATA%\petwatch\pet.log` (Windows); prefs em
+  `~/.config/petwatch/prefs.json` ou `%APPDATA%\petwatch\prefs.json`
 - Observar um projeto só: `PETWATCH_DIRECTORY=/caminho/do/projeto python pet.py`
+- Porta fixa, pulando a busca: `PETWATCH_PORT=4096 python pet.py`
+
+No `petwatch.exe` (sem console) o `--status` e o `--stop` respondem numa
+caixa de diálogo, porque um duplo clique não tem terminal onde mostrar.
 
 ## Documentação
 
 - [`docs/OPERATION.md`](docs/OPERATION.md) — segundo plano, menu, prefs, log
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — pipeline, eventos, watchdog, sprites
-- [`docs/TESTING.md`](docs/TESTING.md) — a suíte de 572 testes
+- [`docs/TESTING.md`](docs/TESTING.md) — a suíte de 671 testes
 - [`docs/BUGS.md`](docs/BUGS.md) — histórico de bugs corrigidos
 - [`CHANGELOG.md`](CHANGELOG.md) — mudanças por versão
 
