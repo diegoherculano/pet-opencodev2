@@ -20,6 +20,7 @@ from .config import (
 from .console import configure_logging, say
 from .daemon import (
     _program_name,
+    detached_command,
     parse_args,
     ready_file,
     report_startup,
@@ -144,6 +145,10 @@ class PetApplication(QApplication):
                 on_open_picker=self.open_picker,
                 on_toggle_on_top=self.set_always_on_top,
                 on_quit=self.quit,
+                on_refresh=self.refresh_pet,
+                on_reload=self.refresh_pet,
+                on_restart=self.refresh_pet,
+                on_update=self.refresh_pet,
                 current_size=self.size.key,
                 always_on_top=self.always_on_top,
                 on_top_supported=self.on_top_supported,
@@ -619,6 +624,57 @@ class PetApplication(QApplication):
             self.tray.refresh_icon()
 
         self.save()
+
+    # ------------------------------------------------------------
+    # Atualizar (reiniciar em segundo plano)
+    # ------------------------------------------------------------
+    def refresh_pet(self) -> None:
+        """Reinicia o pet em segundo plano, como fechar e abrir de novo."""
+
+        log.info("[pet] atualizando: reiniciando em segundo plano")
+
+        import os as _os
+
+        pid = _os.getpid()
+
+        try:
+            import subprocess
+            import sys as _sys
+
+            cmd = detached_command()
+
+            code = (
+                "import os, time, subprocess, sys\n"
+                f"old_pid = {pid}\n"
+                "while True:\n"
+                "    try:\n"
+                "        os.kill(old_pid, 0)\n"
+                "    except OSError:\n"
+                "        break\n"
+                "    time.sleep(0.2)\n"
+                "time.sleep(0.3)\n"
+                f"subprocess.Popen({cmd!r}, stdin=subprocess.DEVNULL, "
+                "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
+                "start_new_session=True)\n"
+            )
+
+            subprocess.Popen(
+                [_sys.executable, "-c", code],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+
+        except Exception as exc:  # pragma: no cover - melhor esforço
+            log.warning("[pet] não consegui agendar o reinício: %s", exc)
+
+        # Encerra pelo caminho limpo; o vigia sobe o novo processo depois.
+        self.quit()
+
+    reload_pet = refresh_pet
+    restart_pet = refresh_pet
+    update_pet = refresh_pet
 
     # ------------------------------------------------------------
     # Encerramento

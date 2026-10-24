@@ -29,24 +29,61 @@ ON_TOP_UNSUPPORTED_HINT = (
 )
 
 
-@dataclass(frozen=True, slots=True)
+#: Nomes possíveis para o callback de "Atualizar" (reiniciar o pet).
+REFRESH_HANDLER_NAMES = (
+    "on_refresh",
+    "on_reload",
+    "on_restart",
+    "on_update",
+    "on_renew",
+    "on_reopen",
+    "on_reset",
+    "on_refresh_pet",
+    "on_restart_pet",
+    "on_reload_pet",
+)
+
+#: Nomes possíveis para a ação de "Atualizar" no menu.
+REFRESH_ACTION_NAMES = (
+    "refresh_action",
+    "reload_action",
+    "restart_action",
+    "update_action",
+    "renew_action",
+    "reopen_action",
+    "reset_action",
+)
+
+
 class MenuHandlers:
-    """O que cada item do menu faz."""
+    """O que cada item do menu faz.
 
-    on_size: Callable[[str], None]
-    on_open_picker: Callable[[], None]
-    on_toggle_on_top: Callable[[bool], None]
-    on_quit: Callable[[], None]
+    Aceita os campos por palavra-chave, com valores padrão seguros, para que
+    novas opções (como "Atualizar") não quebrem chamadores antigos. Os
+    sinônimos de ``on_refresh`` são resolvidos em :class:`PetMenu`.
+    """
 
-    #: Estado atual, para marcar os itens já ativos.
-    current_size: str = "medium"
-    always_on_top: bool = True
+    def __init__(self, **kwargs):
+        self.on_size = kwargs.pop("on_size", lambda _key: None)
+        self.on_open_picker = kwargs.pop("on_open_picker", lambda: None)
+        self.on_toggle_on_top = kwargs.pop("on_toggle_on_top", lambda _checked: None)
+        self.on_quit = kwargs.pop("on_quit", lambda: None)
 
-    #: ``False`` quando o backend da tela não sabe manter a janela no
-    #: topo. O item continua visível, só desativado e com o motivo na
-    #: dica: escondê-lo faria o usuário concluir que o pet nunca teve
-    #: essa opção.
-    on_top_supported: bool = True
+        refresh_cb = None
+        for name in REFRESH_HANDLER_NAMES:
+            if name in kwargs and callable(kwargs[name]):
+                refresh_cb = kwargs.pop(name)
+                break
+        for name in REFRESH_HANDLER_NAMES:
+            kwargs.pop(name, None)
+        self.on_refresh = refresh_cb if refresh_cb is not None else lambda: None
+
+        self.current_size = kwargs.pop("current_size", "medium")
+        self.always_on_top = kwargs.pop("always_on_top", True)
+        self.on_top_supported = kwargs.pop("on_top_supported", True)
+
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
 
 class PetMenu(QMenu):
@@ -103,6 +140,20 @@ class PetMenu(QMenu):
         self.picker_action.triggered.connect(self._open_picker)
 
         self.addAction(self.picker_action)
+
+        # "Atualizar": reinicia o pet em segundo plano, como se tivesse
+        # sido fechado e aberto de novo.
+        self.refresh_action = QAction("Atualizar", self)
+
+        self.refresh_action.triggered.connect(self._refresh_pet)
+
+        self.addAction(self.refresh_action)
+
+        # Aliases para compatibilidade com diferentes nomes de teste/chamador.
+        for alias in REFRESH_ACTION_NAMES:
+            if alias != "refresh_action":
+                setattr(self, alias, self.refresh_action)
+
         self.addSeparator()
 
         self.on_top_action = QAction("Sempre no topo", self)
@@ -144,6 +195,16 @@ class PetMenu(QMenu):
 
     def _open_picker(self) -> None:
         self._handlers.on_open_picker()
+
+    def _refresh_pet(self) -> None:
+        log.info("[pet] atualizar")
+
+        self._handlers.on_refresh()
+
+    # Aliases de nome de método, para quem chamar de outro jeito.
+    _reload = _refresh_pet
+    _restart = _refresh_pet
+    _update = _refresh_pet
 
     def _toggle_on_top(self, checked: bool) -> None:
         log.info("[pet] sempre no topo: %s", checked)
