@@ -646,24 +646,43 @@ class PetApplication(QApplication):
             code = (
                 "import os, time, subprocess, sys\n"
                 f"old_pid = {pid}\n"
-                "while True:\n"
-                "    try:\n"
-                "        os.kill(old_pid, 0)\n"
-                "    except OSError:\n"
-                "        break\n"
-                "    time.sleep(0.2)\n"
-                "time.sleep(0.3)\n"
-                f"subprocess.Popen({cmd!r}, stdin=subprocess.DEVNULL, "
-                "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
-                "start_new_session=True)\n"
+                "if sys.platform.startswith('win'):\n"
+                "    import ctypes\n"
+                "    handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, old_pid)\n"
+                "    if handle:\n"
+                "        while ctypes.windll.kernel32.WaitForSingleObject(handle, 100) != 0:\n"
+                "            pass\n"
+                "        ctypes.windll.kernel32.CloseHandle(handle)\n"
+                "else:\n"
+                "    while True:\n"
+                "        try:\n"
+                "            os.kill(old_pid, 0)\n"
+                "        except OSError:\n"
+                "            break\n"
+                "        time.sleep(0.1)\n"
+                "time.sleep(0.1)\n"
+                f"cmd = {cmd!r}\n"
+                "kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+                "if sys.platform.startswith('win'):\n"
+                "    kwargs['creationflags'] = 0x00000008 | 0x00000200\n"
+                "else:\n"
+                "    kwargs['start_new_session'] = True\n"
+                "subprocess.Popen(cmd, **kwargs)\n"
             )
 
-            subprocess.Popen(
-                [_sys.executable, "-c", code],
+            launch_kwargs = dict(
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                start_new_session=True,
+            )
+            if _sys.platform.startswith("win"):
+                launch_kwargs["creationflags"] = 0x00000008 | 0x00000200
+            else:
+                launch_kwargs["start_new_session"] = True
+
+            subprocess.Popen(
+                [_sys.executable, "-c", code],
+                **launch_kwargs,
             )
 
         except Exception as exc:  # pragma: no cover - melhor esforço
