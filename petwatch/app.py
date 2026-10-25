@@ -629,7 +629,15 @@ class PetApplication(QApplication):
     # Atualizar (reiniciar em segundo plano)
     # ------------------------------------------------------------
     def refresh_pet(self) -> None:
-        """Reinicia o pet em segundo plano, como fechar e abrir de novo."""
+        """Reinicia o pet em segundo plano, como fechar e abrir de novo.
+
+        No build congelado (``petwatch.exe``) o vigia não pode ser
+        ``sys.executable -c ...``: o exe não é Python e não entende
+        ``-c`` — o argparse sai com erro e o pet nunca volta. Era o bug
+        do "Atualizar fecha e não reabre" no Windows. Lá o vigia é
+        nativo (PowerShell no Windows, ``sh`` no POSIX); só no dev,
+        onde ``sys.executable`` é o Python, o vigia continua em ``-c``.
+        """
 
         log.info("[pet] atualizando: reiniciando em segundo plano")
 
@@ -638,58 +646,190 @@ class PetApplication(QApplication):
         pid = _os.getpid()
 
         try:
-            import subprocess
             import sys as _sys
 
+            from .config import LOG_PATH as _LOG_PATH
+
             cmd = detached_command()
+            frozen = bool(getattr(_sys, "frozen", False))
 
-            code = (
-                "import os, time, subprocess, sys\n"
-                f"old_pid = {pid}\n"
-                "if sys.platform.startswith('win'):\n"
-                "    import ctypes\n"
-                "    handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, old_pid)\n"
-                "    if handle:\n"
-                "        while ctypes.windll.kernel32.WaitForSingleObject(handle, 100) != 0:\n"
-                "            pass\n"
-                "        ctypes.windll.kernel32.CloseHandle(handle)\n"
-                "else:\n"
-                "    while True:\n"
-                "        try:\n"
-                "            os.kill(old_pid, 0)\n"
-                "        except OSError:\n"
-                "            break\n"
-                "        time.sleep(0.1)\n"
-                "time.sleep(0.1)\n"
-                f"cmd = {cmd!r}\n"
-                "kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
-                "if sys.platform.startswith('win'):\n"
-                "    kwargs['creationflags'] = 0x00000008 | 0x00000200\n"
-                "else:\n"
-                "    kwargs['start_new_session'] = True\n"
-                "subprocess.Popen(cmd, **kwargs)\n"
-            )
-
-            launch_kwargs = dict(
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            if _sys.platform.startswith("win"):
-                launch_kwargs["creationflags"] = 0x00000008 | 0x00000200
+            if frozen and _sys.platform.startswith("win"):
+                self._schedule_refresh_frozen_windows(pid, cmd)
+            elif frozen:
+                self._schedule_refresh_frozen_posix(pid, cmd, _LOG_PATH)
             else:
-                launch_kwargs["start_new_session"] = True
-
-            subprocess.Popen(
-                [_sys.executable, "-c", code],
-                **launch_kwargs,
-            )
+                self._schedule_refresh_dev(pid, cmd, _LOG_PATH)
 
         except Exception as exc:  # pragma: no cover - melhor esforço
             log.warning("[pet] não consegui agendar o reinício: %s", exc)
 
         # Encerra pelo caminho limpo; o vigia sobe o novo processo depois.
         self.quit()
+
+    @staticmethod
+    def _schedule_refresh_frozen_windows(pid: int, cmd: list[str]) -> None:
+        """Agenda o reinício no build congelado do Windows.
+
+        O ``petwatch.exe`` não entende ``-c`` (não é Python), então o
+        vigia é o PowerShell: espera o pid antigo sair e sobe o mesmo
+        exe com ``--child`` sem janela. Sem console o log já vai para o
+        arquivo por :func:`petwatch.console.configure_logging`, então
+        não há redirecionamento aqui.
+        """
+
+        import subprocess
+
+        def _ps_quote(value: object) -> str:
+            return "'" + str(value).replace("'", "''") + "'"
+
+        exe = cmd[0]
+        args = [str(part) for part in cmd[1:]]
+        ps_command = (
+            f"try {{ Wait-Process -Id {int(pid)} "
+            "-ErrorAction SilentlyContinue } catch {}; "
+            f"Start-Process -FilePath {_ps_quote(exe)}"
+            + (
+                " -ArgumentList "
+                + ", ".join(_ps_quote(a) for a in args)
+                if args
+                else ""
+            )
+            + " -WindowStyle Hidden"
+        )
+
+        watcher = [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            ps_command,
+        ]
+
+        try:
+            subprocess.Popen(
+                watcher,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=0x00000008 | 0x00000200,
+            )
+        except FileNotFoundError:
+            # Windows sem PowerShell: espera fixa e ``start``.
+            quoted = " ".join(
+                f'"{part}"' if " " in str(part) else str(part) for part in cmd
+            )
+            fallback = (
+                "timeout /t 6 /nobreak >nul & start "
+                f'"" {quoted}'
+            )
+            subprocess.Popen(
+                ["cmd.exe", "/c", fallback],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=0x00000008 | 0x00000200,
+            )
+
+    @staticmethod
+    def _schedule_refresh_frozen_posix(
+        pid: int, cmd: list[str], log_path: object
+    ) -> None:
+        """Agenda o reinício no build congelado do POSIX.
+
+        Mesmo motivo do Windows: o exe congelado não roda ``-c``. O
+        vigia é o ``sh``: espera o pid sair e faz ``exec`` do mesmo
+        comando, com a saída anexada no log.
+        """
+
+        import shlex
+        import subprocess
+
+        cmd_str = " ".join(shlex.quote(str(part)) for part in cmd)
+        log_quoted = shlex.quote(str(log_path))
+        sh_code = (
+            f"while kill -0 {int(pid)} 2>/dev/null; do sleep 0.1; done; "
+            f"sleep 0.2; exec {cmd_str} >>{log_quoted} 2>&1"
+        )
+
+        subprocess.Popen(
+            ["/bin/sh", "-c", sh_code],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    @staticmethod
+    def _schedule_refresh_dev(pid: int, cmd: list[str], log_path: object) -> None:
+        """Agenda o reinício no dev, onde ``sys.executable`` é Python.
+
+        É o vigia original em ``python -c`` (espera o pid e relança),
+        com a saída do novo processo anexada no log — igual ao
+        lançamento normal em segundo plano.
+        """
+
+        import subprocess
+        import sys as _sys
+
+        code = (
+            "import os, time, subprocess, sys\n"
+            f"old_pid = {int(pid)}\n"
+            f"log_path = {str(log_path)!r}\n"
+            f"cmd = {cmd!r}\n"
+            "if sys.platform.startswith('win'):\n"
+            "    import ctypes\n"
+            "    h = ctypes.windll.kernel32.OpenProcess(\n"
+            "        0x00100000, False, old_pid)\n"
+            "    if h:\n"
+            "        while ctypes.windll.kernel32.WaitForSingleObject(\n"
+            "                h, 100) != 0:\n"
+            "            pass\n"
+            "        ctypes.windll.kernel32.CloseHandle(h)\n"
+            "else:\n"
+            "    while True:\n"
+            "        try:\n"
+            "            os.kill(old_pid, 0)\n"
+            "        except OSError:\n"
+            "            break\n"
+            "        time.sleep(0.1)\n"
+            "time.sleep(0.1)\n"
+            "try:\n"
+            "    parent = os.path.dirname(log_path) or '.'\n"
+            "    os.makedirs(parent, exist_ok=True)\n"
+            "except OSError:\n"
+            "    pass\n"
+            "fd = os.open(log_path,\n"
+            "           os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)\n"
+            "try:\n"
+            "    kw = dict(stdin=subprocess.DEVNULL,\n"
+            "              stdout=fd, stderr=subprocess.STDOUT)\n"
+            "    if sys.platform.startswith('win'):\n"
+            "        kw['creationflags'] = 0x00000008 | 0x00000200\n"
+            "    else:\n"
+            "        kw['start_new_session'] = True\n"
+            "    subprocess.Popen(cmd, **kw)\n"
+            "finally:\n"
+            "    os.close(fd)\n"
+        )
+
+        launch_kwargs = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if _sys.platform.startswith("win"):
+            launch_kwargs["creationflags"] = 0x00000008 | 0x00000200
+        else:
+            launch_kwargs["start_new_session"] = True
+
+        subprocess.Popen(
+            [_sys.executable, "-c", code],
+            **launch_kwargs,
+        )
 
     reload_pet = refresh_pet
     restart_pet = refresh_pet
