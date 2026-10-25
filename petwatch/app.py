@@ -676,34 +676,67 @@ class PetApplication(QApplication):
         """Agenda o reinício no build congelado do Windows.
 
         O ``petwatch.exe`` não entende ``-c`` (não é Python), então o
-        vigia é o próprio ``cmd``: uma laçada de até 30s espera o pid
-        antigo sumir do ``tasklist`` e então sobe o mesmo comando com
-        ``start`` — sem PowerShell (que pode faltar ou estar bloqueado),
-        sem janela e sem arquivo temporário. O ``PETWATCH_RESTART`` diz
-        ao filho para esperar a instância em vez de sair com "já existe
-        um pet" se o antigo ainda está soltando o pipe; a saída do
-        vigia vai para o log, então uma falha deixa rastro em vez de
-        sumir no silêncio.
+        vigia é um ``.bat`` temporário: espera o pid antigo sumir do
+        ``tasklist`` (até 30s) e sobe o mesmo comando com ``start`` —
+        sem PowerShell (que pode faltar ou estar bloqueado) e sem
+        one-liner de ``cmd /c`` (cujas aspas o parser do ``cmd``
+        interpreta errado, gerando o "não pode localizar" em loop).
+        Cada comando vai na sua linha e o ``/c`` recebe só o caminho
+        do ``.bat`` — o único caso que a regra de aspas do ``cmd``
+        trata bem. O ``PETWATCH_RESTART`` diz ao filho para esperar a
+        instância em vez de sair com "já existe um pet"; a saída do
+        vigia vai para o log e o ``.bat`` se apaga no fim.
         """
 
         import os as _os
         import subprocess
+        import tempfile
 
-        quoted = []
-        for part in [str(item) for item in cmd]:
-            # Dentro do ``/c`` o ``%`` expande: dobra para chegar literal.
-            # Aspas nunca aparecem (o Windows as proíbe em nomes).
-            text = part.replace("%", "%%")
-            quoted.append(f'"{text}"' if " " in text else text)
+        exe = _windows_short_path(cmd[0])
+        bat_dir = tempfile.gettempdir()
+        bat_name = f"petwatch-restart-{int(pid)}-{_os.getpid()}.bat"
+        bat_path = _os.path.join(bat_dir, bat_name)
 
-        one_liner = (
-            f"for /l %i in (1,1,30) do @(tasklist /nh /fi \"PID eq {int(pid)}\" "
-            f"2>nul | find \"{int(pid)}\" >nul && timeout /t 1 /nobreak >nul) "
-            f"& set \"{RESTART_ENV}={RESTART_CLAIM_TIMEOUT:g}\" "
-            f"& start \"\" {' '.join(quoted)}"
-        )
+        # Faxina de vigias de reinícios que morreram no meio do caminho.
+        # Seguro: só existe um pet por vez, então nenhum outro vigia
+        # está lendo esses arquivos agora.
+        try:
+            import contextlib
+            import glob as _glob
 
-        watcher = ["cmd.exe", "/c", one_liner]
+            for stale in _glob.glob(
+                _os.path.join(bat_dir, "petwatch-restart-*.bat")
+            ):
+                if _os.path.basename(stale) != bat_name:
+                    with contextlib.suppress(OSError):
+                        _os.remove(stale)
+        except Exception:
+            pass
+
+        lines = [
+            "@echo off",
+            "rem Vigia do Atualizar: espera o pet antigo sair e sobe o novo.",
+            f"set \"OLD_PID={int(pid)}\"",
+            f"set \"PET_EXE={_bat_escape(exe)}\"",
+            "set \"TRIES=0\"",
+            ":wait",
+            "tasklist /nh /fi \"PID eq %OLD_PID%\" 2>nul "
+            "| find \"%OLD_PID%\" >nul",
+            "if errorlevel 1 goto launch",
+            "set /a TRIES+=1",
+            "if %TRIES% GEQ 30 goto launch",
+            "timeout /t 1 /nobreak >nul",
+            "goto wait",
+            ":launch",
+            f"set \"{RESTART_ENV}={RESTART_CLAIM_TIMEOUT:g}\"",
+            "start \"\" \"%PET_EXE%\" --child",
+            "(goto) 2>nul & del \"%~f0\"",
+        ]
+
+        with open(bat_path, "w", encoding="utf-8", newline="") as stream:
+            stream.write("\r\n".join(lines) + "\r\n")
+
+        watcher = ["cmd.exe", "/c", bat_path]
 
         log.info("[pet] vigia do reinício agendado: %s", watcher)
 
@@ -1068,6 +1101,45 @@ def _claim_restartable(instance) -> bool:
             return True
 
     return False
+
+
+def _bat_escape(text: str) -> str:
+    """Escapa um valor para dentro de um ``set "VAR=..."`` do ``.bat``.
+
+    No arquivo o ``%`` expande — dobra para chegar literal. O resto é
+    seguro entre as aspas do ``set`` (sem expansão tardia ligada, o
+    ``!`` e os metacaracteres não expandem).
+    """
+
+    return str(text).replace("%", "%%")
+
+
+def _windows_short_path(path: str) -> str:
+    """Caminho 8.3 (só ASCII) para o ``.bat`` do vigia não depender da
+    codepage.
+
+    O ``cmd`` lê o ``.bat`` na codepage do sistema: um exe instalado
+    sob um usuário com acento chegaria mangled e o ``start`` falharia
+    sem deixar rastro útil. O nome curto é só ASCII e resolve o mesmo
+    arquivo. Se o volume não tem nome curto (ou a chamada falha), volta
+    o caminho longo — que funciona enquanto for ASCII.
+    """
+
+    try:
+        import ctypes
+
+        buffer = ctypes.create_unicode_buffer(1024)
+        length = ctypes.windll.kernel32.GetShortPathNameW(
+            str(path), buffer, len(buffer)
+        )
+
+        if 0 < length < len(buffer):
+            return buffer.value
+
+    except Exception:
+        pass
+
+    return str(path)
 
 
 def _posix(options, instance) -> int:
