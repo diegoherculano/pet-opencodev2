@@ -19,11 +19,7 @@ from .config import (
 )
 from .console import configure_logging, say
 from .daemon import (
-    RESTART_CLAIM_POLL,
-    RESTART_CLAIM_TIMEOUT,
-    RESTART_ENV,
     _program_name,
-    detached_command,
     parse_args,
     ready_file,
     report_startup,
@@ -629,228 +625,34 @@ class PetApplication(QApplication):
         self.save()
 
     # ------------------------------------------------------------
-    # Atualizar (reiniciar em segundo plano)
+    # Atualizar (forçar a ressincronização com o opencode)
     # ------------------------------------------------------------
     def refresh_pet(self) -> None:
-        """Reinicia o pet em segundo plano, como fechar e abrir de novo.
+        """Força a ressincronização com o opencode, como fechar e abrir.
 
-        No build congelado (``petwatch.exe``) o vigia não pode ser
-        ``sys.executable -c ...``: o exe não é Python e não entende
-        ``-c`` — o argparse sai com erro e o pet nunca volta. Era o bug
-        do "Atualizar fecha e não reabre" no Windows. Lá o vigia é o
-        próprio ``cmd`` (laçada com ``tasklist`` + ``start``); só no dev,
-        onde ``sys.executable`` é o Python, o vigia continua em ``-c``.
+        O stream do opencode é volátil por contrato (eventos durante uma
+        queda são perdidos) e a consulta de pendência tem caches com
+        prazo — projetos (60s), locations dadas como mortas, locations
+        quentes (que prendem o ciclo no modo rápido) e nomes. Um pet
+        rodando pode assim demorar a mostrar um balão que um pet
+        recém-aberto pega na hora. Zerar o quadro e os caches faz o
+        próximo ciclo redescobrir tudo, sem encerrar o processo: sem
+        vigia, sem corrida pela instância única, igual no Windows e no
+        Linux.
         """
 
-        log.info("[pet] atualizando: reiniciando em segundo plano")
+        log.info("[pet] atualizando: ressincronizando com o opencode")
 
-        import os as _os
+        self.board = SessionBoard()
+        self._shown_state = None
+        self._shown_cards = []
 
-        pid = _os.getpid()
+        self.monitor.reset_state()
 
-        try:
-            import sys as _sys
+        if self.poller is not None:
+            self.poller.resync()
 
-            from .config import LOG_PATH as _LOG_PATH
-
-            cmd = detached_command()
-            frozen = bool(getattr(_sys, "frozen", False))
-
-            if frozen and _sys.platform.startswith("win"):
-                self._schedule_refresh_frozen_windows(pid, cmd, _LOG_PATH)
-            elif frozen:
-                self._schedule_refresh_frozen_posix(pid, cmd, _LOG_PATH)
-            else:
-                self._schedule_refresh_dev(pid, cmd, _LOG_PATH)
-
-        except Exception as exc:  # pragma: no cover - melhor esforço
-            log.warning("[pet] não consegui agendar o reinício: %s", exc)
-
-        # Encerra pelo caminho limpo; o vigia sobe o novo processo depois.
-        self.quit()
-
-    @staticmethod
-    def _schedule_refresh_frozen_windows(
-        pid: int, cmd: list[str], log_path: object
-    ) -> None:
-        """Agenda o reinício no build congelado do Windows.
-
-        O ``petwatch.exe`` não entende ``-c`` (não é Python), então o
-        vigia é um ``.bat`` temporário: espera o pid antigo sumir do
-        ``tasklist`` (até 30s) e sobe o mesmo comando com ``start`` —
-        sem PowerShell (que pode faltar ou estar bloqueado) e sem
-        one-liner de ``cmd /c`` (cujas aspas o parser do ``cmd``
-        interpreta errado, gerando o "não pode localizar" em loop).
-        Cada comando vai na sua linha e o ``/c`` recebe só o caminho
-        do ``.bat`` — o único caso que a regra de aspas do ``cmd``
-        trata bem. O ``PETWATCH_RESTART`` diz ao filho para esperar a
-        instância em vez de sair com "já existe um pet"; a saída do
-        vigia vai para o log e o ``.bat`` se apaga no fim.
-        """
-
-        import os as _os
-        import subprocess
-        import tempfile
-
-        exe = _windows_short_path(cmd[0])
-        bat_dir = tempfile.gettempdir()
-        bat_name = f"petwatch-restart-{int(pid)}-{_os.getpid()}.bat"
-        bat_path = _os.path.join(bat_dir, bat_name)
-
-        # Faxina de vigias de reinícios que morreram no meio do caminho.
-        # Seguro: só existe um pet por vez, então nenhum outro vigia
-        # está lendo esses arquivos agora.
-        try:
-            import contextlib
-            import glob as _glob
-
-            for stale in _glob.glob(
-                _os.path.join(bat_dir, "petwatch-restart-*.bat")
-            ):
-                if _os.path.basename(stale) != bat_name:
-                    with contextlib.suppress(OSError):
-                        _os.remove(stale)
-        except Exception:
-            pass
-
-        lines = [
-            "@echo off",
-            "rem Vigia do Atualizar: espera o pet antigo sair e sobe o novo.",
-            f"set \"OLD_PID={int(pid)}\"",
-            f"set \"PET_EXE={_bat_escape(exe)}\"",
-            "set \"TRIES=0\"",
-            ":wait",
-            "tasklist /nh /fi \"PID eq %OLD_PID%\" 2>nul "
-            "| find \"%OLD_PID%\" >nul",
-            "if errorlevel 1 goto launch",
-            "set /a TRIES+=1",
-            "if %TRIES% GEQ 30 goto launch",
-            "timeout /t 1 /nobreak >nul",
-            "goto wait",
-            ":launch",
-            f"set \"{RESTART_ENV}={RESTART_CLAIM_TIMEOUT:g}\"",
-            "start \"\" \"%PET_EXE%\" --child",
-            "(goto) 2>nul & del \"%~f0\"",
-        ]
-
-        with open(bat_path, "w", encoding="utf-8", newline="") as stream:
-            stream.write("\r\n".join(lines) + "\r\n")
-
-        watcher = ["cmd.exe", "/c", bat_path]
-
-        log.info("[pet] vigia do reinício agendado: %s", watcher)
-
-        log_fd = _os.open(
-            str(log_path), _os.O_WRONLY | _os.O_CREAT | _os.O_APPEND, 0o644
-        )
-        try:
-            subprocess.Popen(
-                watcher,
-                stdin=subprocess.DEVNULL,
-                stdout=log_fd,
-                stderr=subprocess.STDOUT,
-                creationflags=0x00000008 | 0x00000200,
-            )
-        finally:
-            _os.close(log_fd)
-
-    @staticmethod
-    def _schedule_refresh_frozen_posix(
-        pid: int, cmd: list[str], log_path: object
-    ) -> None:
-        """Agenda o reinício no build congelado do POSIX.
-
-        Mesmo motivo do Windows: o exe congelado não roda ``-c``. O
-        vigia é o ``sh``: espera o pid sair e faz ``exec`` do mesmo
-        comando, com a saída anexada no log.
-        """
-
-        import shlex
-        import subprocess
-
-        cmd_str = " ".join(shlex.quote(str(part)) for part in cmd)
-        log_quoted = shlex.quote(str(log_path))
-        sh_code = (
-            f"while kill -0 {int(pid)} 2>/dev/null; do sleep 0.1; done; "
-            f"sleep 0.2; exec {cmd_str} >>{log_quoted} 2>&1"
-        )
-
-        subprocess.Popen(
-            ["/bin/sh", "-c", sh_code],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-
-    @staticmethod
-    def _schedule_refresh_dev(pid: int, cmd: list[str], log_path: object) -> None:
-        """Agenda o reinício no dev, onde ``sys.executable`` é Python.
-
-        É o vigia original em ``python -c`` (espera o pid e relança),
-        com a saída do novo processo anexada no log — igual ao
-        lançamento normal em segundo plano.
-        """
-
-        import subprocess
-        import sys as _sys
-
-        code = (
-            "import os, time, subprocess, sys\n"
-            f"old_pid = {int(pid)}\n"
-            f"log_path = {str(log_path)!r}\n"
-            f"cmd = {cmd!r}\n"
-            f"os.environ[{RESTART_ENV!r}] = '{RESTART_CLAIM_TIMEOUT:g}'\n"
-            "if sys.platform.startswith('win'):\n"
-            "    import ctypes\n"
-            "    h = ctypes.windll.kernel32.OpenProcess(\n"
-            "        0x00100000, False, old_pid)\n"
-            "    if h:\n"
-            "        while ctypes.windll.kernel32.WaitForSingleObject(\n"
-            "                h, 100) != 0:\n"
-            "            pass\n"
-            "        ctypes.windll.kernel32.CloseHandle(h)\n"
-            "else:\n"
-            "    while True:\n"
-            "        try:\n"
-            "            os.kill(old_pid, 0)\n"
-            "        except OSError:\n"
-            "            break\n"
-            "        time.sleep(0.1)\n"
-            "time.sleep(0.1)\n"
-            "try:\n"
-            "    parent = os.path.dirname(log_path) or '.'\n"
-            "    os.makedirs(parent, exist_ok=True)\n"
-            "except OSError:\n"
-            "    pass\n"
-            "fd = os.open(log_path,\n"
-            "           os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)\n"
-            "try:\n"
-            "    kw = dict(stdin=subprocess.DEVNULL,\n"
-            "              stdout=fd, stderr=subprocess.STDOUT)\n"
-            "    if sys.platform.startswith('win'):\n"
-            "        kw['creationflags'] = 0x00000008 | 0x00000200\n"
-            "    else:\n"
-            "        kw['start_new_session'] = True\n"
-            "    subprocess.Popen(cmd, **kw)\n"
-            "finally:\n"
-            "    os.close(fd)\n"
-        )
-
-        launch_kwargs = {
-            "stdin": subprocess.DEVNULL,
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
-        }
-        if _sys.platform.startswith("win"):
-            launch_kwargs["creationflags"] = 0x00000008 | 0x00000200
-        else:
-            launch_kwargs["start_new_session"] = True
-
-        subprocess.Popen(
-            [_sys.executable, "-c", code],
-            **launch_kwargs,
-        )
+        self._publish(STATE_CONNECTING)
 
     reload_pet = refresh_pet
     restart_pet = refresh_pet
@@ -1063,85 +865,6 @@ def _already_running(instance) -> int:
     return 0
 
 
-def _claim_restartable(instance) -> bool:
-    """Toma a instância, esperando o pet antigo quando for um reinício.
-
-    O "Atualizar" encerra o pet antigo e o vigia sobe o novo; se o
-    antigo demora a soltar o pipe (o encerramento espera a thread do
-    monitor), o novo sairia com "já existe um pet rodando" e ninguém
-    reabriria. Com o marcador ``PETWATCH_RESTART`` (posto pelo vigia),
-    o novo tenta de novo até o prazo em vez de desistir de primeira.
-    Sem o marcador, o comportamento é o de sempre: falhou, é segundo
-    pet e sai.
-    """
-
-    import os
-    import time
-
-    if instance.claim():
-        os.environ.pop(RESTART_ENV, None)
-        return True
-
-    try:
-        wait = float(os.environ.get(RESTART_ENV, "") or 0.0)
-    except ValueError:
-        wait = 0.0
-
-    if wait <= 0:
-        return False
-
-    log.info("[pet] aguardando o pet antigo liberar a instância...")
-
-    deadline = time.monotonic() + wait
-
-    while time.monotonic() < deadline:
-        time.sleep(RESTART_CLAIM_POLL)
-        if instance.claim():
-            os.environ.pop(RESTART_ENV, None)
-            return True
-
-    return False
-
-
-def _bat_escape(text: str) -> str:
-    """Escapa um valor para dentro de um ``set "VAR=..."`` do ``.bat``.
-
-    No arquivo o ``%`` expande — dobra para chegar literal. O resto é
-    seguro entre as aspas do ``set`` (sem expansão tardia ligada, o
-    ``!`` e os metacaracteres não expandem).
-    """
-
-    return str(text).replace("%", "%%")
-
-
-def _windows_short_path(path: str) -> str:
-    """Caminho 8.3 (só ASCII) para o ``.bat`` do vigia não depender da
-    codepage.
-
-    O ``cmd`` lê o ``.bat`` na codepage do sistema: um exe instalado
-    sob um usuário com acento chegaria mangled e o ``start`` falharia
-    sem deixar rastro útil. O nome curto é só ASCII e resolve o mesmo
-    arquivo. Se o volume não tem nome curto (ou a chamada falha), volta
-    o caminho longo — que funciona enquanto for ASCII.
-    """
-
-    try:
-        import ctypes
-
-        buffer = ctypes.create_unicode_buffer(1024)
-        length = ctypes.windll.kernel32.GetShortPathNameW(
-            str(path), buffer, len(buffer)
-        )
-
-        if 0 < length < len(buffer):
-            return buffer.value
-
-    except Exception:
-        pass
-
-    return str(path)
-
-
 def _posix(options, instance) -> int:
     """Fluxo original: o lock é tomado aqui e atravessa o ``fork``."""
 
@@ -1163,13 +886,7 @@ def _windows(options, instance) -> int:
         # Este é o processo solto. Quem garante a instância única é o pipe,
         # e ele é assumido aqui — no pai não haveria handle confiável para
         # chegar até este processo.
-        #
-        # O log vem antes da tomada: quando o processo nasceu de um
-        # "Atualizar", a espera pelo pet antigo é registrada no pet.log
-        # em vez de se perder (o ``run_app`` reconfigurar é inócuo, pelo
-        # guarda de ``configure_logging``).
-        configure_logging()
-        if not _claim_restartable(instance):
+        if not instance.claim():
             return _already_running(instance)
 
         return run_app(options, instance, ready_file())

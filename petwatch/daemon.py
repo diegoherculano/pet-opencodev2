@@ -125,19 +125,6 @@ READY_ENV = "PETWATCH_READY_FILE"
 #: está no arquivo, a leitura é imediata.
 READY_POLL = 0.05
 
-#: Marca o filho como nascido de um "Atualizar": o valor é por quantos
-#: segundos ele espera o pet antigo soltar a instância única antes de
-#: desistir com "já existe um pet rodando". Sem isso, um encerramento
-#: lento do antigo faria o novo perder a corrida e sair — e ninguém
-#: reabriria o pet.
-RESTART_ENV = "PETWATCH_RESTART"
-
-#: Prazo dessa espera, posto pelo vigia do "Atualizar".
-RESTART_CLAIM_TIMEOUT = 20.0
-
-#: Passo da espera: de quanto em quanto o filho tenta tomar de novo.
-RESTART_CLAIM_POLL = 0.2
-
 #: De quanto em quanto tempo ``--stop`` confere se o processo morreu.
 STOP_POLL = 0.1
 

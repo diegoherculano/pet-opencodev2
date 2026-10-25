@@ -125,6 +125,17 @@ class OpenCodeMonitor(QObject):
         if connection is not None:
             connection.interrupt()
 
+    def reset_state(self) -> None:
+        """Esquece o último estado publicado, como num arranque.
+
+        O "Atualizar" zera o quadro; sem isto, o próximo evento
+        repetiria o estado atual e o ``state_changed`` — que só emite
+        mudança — não sairia, deixando o quadro zerado sem o estado
+        global até o estado seguinte.
+        """
+
+        self._state = None
+
     def process_event(self, event_name: str | None, data) -> None:
         """Callback do stream: traduz o evento e emite o estado.
 

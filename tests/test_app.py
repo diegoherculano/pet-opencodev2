@@ -824,5 +824,93 @@ class DetachedStartupTests(unittest.TestCase):
             run_app(parse_args(["--foreground"]), self.instance)
 
 
+class RefreshTests(unittest.TestCase):
+    """O "Atualizar" ressincroniza sem encerrar o processo.
+
+    Era um reinício por processo externo (vigia + ``--child``), que
+    quebrava de um jeito diferente em cada plataforma — e o motivo
+    real do botão sempre foi outro: forçar a ressincronização com o
+    opencode, que um fechar-e-abrir fazia de graça. Agora é
+    in-process: quadro zerado, caches do poll invalidados e estado
+    republicado.
+    """
+
+    def test_refresh_resets_the_board_and_republishes(self):
+        from petwatch.states import STATE_CONNECTING, STATE_WORKING
+
+        # Como em produção: o stream traz o evento e a consulta lista a
+        # sessão como ativa (é o poll que anda o relógio do quadro).
+        APP.board.note_active(["sess-1"])
+        APP.board.note_event("sess-1", STATE_WORKING)
+        APP._sync()
+        self.assertNotEqual(APP.board.cards(), [])
+
+        APP.refresh_pet()
+        QCoreApplication.processEvents()
+
+        self.assertEqual(APP.board.cards(), [])
+        self.assertEqual(APP.board.state, STATE_CONNECTING)
+        self.assertIsNone(APP._shown_state)
+        self.assertEqual(APP.pet.state, STATE_CONNECTING)
+
+    def test_refresh_does_not_quit_the_process(self):
+        APP.refresh_pet()
+        QCoreApplication.processEvents()
+
+        self.assertIs(QApplication.instance(), APP)
+
+    def test_refresh_forgets_the_last_monitor_state(self):
+        APP.monitor.emit_state("working")
+        self.assertEqual(APP.monitor._state, "working")
+
+        APP.refresh_pet()
+        QCoreApplication.processEvents()
+
+        self.assertIsNone(APP.monitor._state)
+
+    def test_refresh_resyncs_the_poller_when_present(self):
+        from unittest import mock
+
+        poller = mock.Mock()
+        old, APP.poller = APP.poller, poller
+        try:
+            APP.refresh_pet()
+        finally:
+            APP.poller = old
+
+        poller.resync.assert_called_once_with()
+
+    def test_refresh_without_poller_is_a_noop_for_the_poll(self):
+        self.assertIsNone(APP.poller)
+
+        APP.refresh_pet()
+        QCoreApplication.processEvents()
+
+        self.assertEqual(APP.board.cards(), [])
+
+    def test_poller_resync_rediscovers_everything(self):
+        from petwatch.sessions import StatusPoller
+
+        poller = StatusPoller(lambda: None, lambda: None)
+        poller._projects = ["algum-diretorio"]
+        poller._projects_read_at = 123.0
+        poller._missing = {"morto"}
+        poller._hot = {"quente"}
+        poller._names = {"sess": {"title": "nome"}}
+        poller._password = "antiga"
+        poller.supported = False
+
+        poller.resync()
+
+        self.assertEqual(poller._projects, [])
+        self.assertEqual(poller._projects_read_at, 0.0)
+        self.assertEqual(poller._missing, set())
+        self.assertEqual(poller._hot, [])
+        self.assertEqual(poller._names, {})
+        self.assertIsNone(poller._password)
+        self.assertTrue(poller.supported)
+        self.assertTrue(poller._woken.is_set())
+
+
 if __name__ == "__main__":
     unittest.main()

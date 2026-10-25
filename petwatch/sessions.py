@@ -910,6 +910,26 @@ class StatusPoller(QObject):
 
         self._woken.set()
 
+    def resync(self) -> None:
+        """Força a próxima consulta a redescobrir tudo, como num arranque.
+
+        Limpa os caches que fazem um pet rodando enxergar menos que um
+        pet recém-aberto: a lista de projetos (só relida no TTL de 60s),
+        os locations dados como mortos, os quentes (que prendem o ciclo
+        no modo rápido e escondem pendências de outros locations), os
+        nomes e a senha — e acorda a thread para o ciclo ser agora, em
+        vez de esperar o tique do relógio.
+        """
+
+        self._projects = []
+        self._projects_read_at = 0.0
+        self._missing = set()
+        self._hot = []
+        self._names = {}
+        self._password = None
+        self.supported = True
+        self._woken.set()
+
     def start(self) -> None:
         if self._thread is not None:
             return
