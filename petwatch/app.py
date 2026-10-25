@@ -19,6 +19,9 @@ from .config import (
 )
 from .console import configure_logging, say
 from .daemon import (
+    RESTART_CLAIM_POLL,
+    RESTART_CLAIM_TIMEOUT,
+    RESTART_ENV,
     _program_name,
     detached_command,
     parse_args,
@@ -634,8 +637,8 @@ class PetApplication(QApplication):
         No build congelado (``petwatch.exe``) o vigia não pode ser
         ``sys.executable -c ...``: o exe não é Python e não entende
         ``-c`` — o argparse sai com erro e o pet nunca volta. Era o bug
-        do "Atualizar fecha e não reabre" no Windows. Lá o vigia é
-        nativo (PowerShell no Windows, ``sh`` no POSIX); só no dev,
+        do "Atualizar fecha e não reabre" no Windows. Lá o vigia é o
+        próprio ``cmd`` (laçada com ``tasklist`` + ``start``); só no dev,
         onde ``sys.executable`` é o Python, o vigia continua em ``-c``.
         """
 
@@ -654,7 +657,7 @@ class PetApplication(QApplication):
             frozen = bool(getattr(_sys, "frozen", False))
 
             if frozen and _sys.platform.startswith("win"):
-                self._schedule_refresh_frozen_windows(pid, cmd)
+                self._schedule_refresh_frozen_windows(pid, cmd, _LOG_PATH)
             elif frozen:
                 self._schedule_refresh_frozen_posix(pid, cmd, _LOG_PATH)
             else:
@@ -667,72 +670,56 @@ class PetApplication(QApplication):
         self.quit()
 
     @staticmethod
-    def _schedule_refresh_frozen_windows(pid: int, cmd: list[str]) -> None:
+    def _schedule_refresh_frozen_windows(
+        pid: int, cmd: list[str], log_path: object
+    ) -> None:
         """Agenda o reinício no build congelado do Windows.
 
         O ``petwatch.exe`` não entende ``-c`` (não é Python), então o
-        vigia é o PowerShell: espera o pid antigo sair e sobe o mesmo
-        exe com ``--child`` sem janela. Sem console o log já vai para o
-        arquivo por :func:`petwatch.console.configure_logging`, então
-        não há redirecionamento aqui.
+        vigia é o próprio ``cmd``: uma laçada de até 30s espera o pid
+        antigo sumir do ``tasklist`` e então sobe o mesmo comando com
+        ``start`` — sem PowerShell (que pode faltar ou estar bloqueado),
+        sem janela e sem arquivo temporário. O ``PETWATCH_RESTART`` diz
+        ao filho para esperar a instância em vez de sair com "já existe
+        um pet" se o antigo ainda está soltando o pipe; a saída do
+        vigia vai para o log, então uma falha deixa rastro em vez de
+        sumir no silêncio.
         """
 
+        import os as _os
         import subprocess
 
-        def _ps_quote(value: object) -> str:
-            return "'" + str(value).replace("'", "''") + "'"
+        quoted = []
+        for part in [str(item) for item in cmd]:
+            # Dentro do ``/c`` o ``%`` expande: dobra para chegar literal.
+            # Aspas nunca aparecem (o Windows as proíbe em nomes).
+            text = part.replace("%", "%%")
+            quoted.append(f'"{text}"' if " " in text else text)
 
-        exe = cmd[0]
-        args = [str(part) for part in cmd[1:]]
-        ps_command = (
-            f"try {{ Wait-Process -Id {int(pid)} "
-            "-ErrorAction SilentlyContinue } catch {}; "
-            f"Start-Process -FilePath {_ps_quote(exe)}"
-            + (
-                " -ArgumentList "
-                + ", ".join(_ps_quote(a) for a in args)
-                if args
-                else ""
-            )
-            + " -WindowStyle Hidden"
+        one_liner = (
+            f"for /l %i in (1,1,30) do @(tasklist /nh /fi \"PID eq {int(pid)}\" "
+            f"2>nul | find \"{int(pid)}\" >nul && timeout /t 1 /nobreak >nul) "
+            f"& set \"{RESTART_ENV}={RESTART_CLAIM_TIMEOUT:g}\" "
+            f"& start \"\" {' '.join(quoted)}"
         )
 
-        watcher = [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            ps_command,
-        ]
+        watcher = ["cmd.exe", "/c", one_liner]
 
+        log.info("[pet] vigia do reinício agendado: %s", watcher)
+
+        log_fd = _os.open(
+            str(log_path), _os.O_WRONLY | _os.O_CREAT | _os.O_APPEND, 0o644
+        )
         try:
             subprocess.Popen(
                 watcher,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=log_fd,
+                stderr=subprocess.STDOUT,
                 creationflags=0x00000008 | 0x00000200,
             )
-        except FileNotFoundError:
-            # Windows sem PowerShell: espera fixa e ``start``.
-            quoted = " ".join(
-                f'"{part}"' if " " in str(part) else str(part) for part in cmd
-            )
-            fallback = (
-                "timeout /t 6 /nobreak >nul & start "
-                f'"" {quoted}'
-            )
-            subprocess.Popen(
-                ["cmd.exe", "/c", fallback],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=0x00000008 | 0x00000200,
-            )
+        finally:
+            _os.close(log_fd)
 
     @staticmethod
     def _schedule_refresh_frozen_posix(
@@ -780,6 +767,7 @@ class PetApplication(QApplication):
             f"old_pid = {int(pid)}\n"
             f"log_path = {str(log_path)!r}\n"
             f"cmd = {cmd!r}\n"
+            f"os.environ[{RESTART_ENV!r}] = '{RESTART_CLAIM_TIMEOUT:g}'\n"
             "if sys.platform.startswith('win'):\n"
             "    import ctypes\n"
             "    h = ctypes.windll.kernel32.OpenProcess(\n"
@@ -1042,6 +1030,46 @@ def _already_running(instance) -> int:
     return 0
 
 
+def _claim_restartable(instance) -> bool:
+    """Toma a instância, esperando o pet antigo quando for um reinício.
+
+    O "Atualizar" encerra o pet antigo e o vigia sobe o novo; se o
+    antigo demora a soltar o pipe (o encerramento espera a thread do
+    monitor), o novo sairia com "já existe um pet rodando" e ninguém
+    reabriria. Com o marcador ``PETWATCH_RESTART`` (posto pelo vigia),
+    o novo tenta de novo até o prazo em vez de desistir de primeira.
+    Sem o marcador, o comportamento é o de sempre: falhou, é segundo
+    pet e sai.
+    """
+
+    import os
+    import time
+
+    if instance.claim():
+        os.environ.pop(RESTART_ENV, None)
+        return True
+
+    try:
+        wait = float(os.environ.get(RESTART_ENV, "") or 0.0)
+    except ValueError:
+        wait = 0.0
+
+    if wait <= 0:
+        return False
+
+    log.info("[pet] aguardando o pet antigo liberar a instância...")
+
+    deadline = time.monotonic() + wait
+
+    while time.monotonic() < deadline:
+        time.sleep(RESTART_CLAIM_POLL)
+        if instance.claim():
+            os.environ.pop(RESTART_ENV, None)
+            return True
+
+    return False
+
+
 def _posix(options, instance) -> int:
     """Fluxo original: o lock é tomado aqui e atravessa o ``fork``."""
 
@@ -1063,7 +1091,13 @@ def _windows(options, instance) -> int:
         # Este é o processo solto. Quem garante a instância única é o pipe,
         # e ele é assumido aqui — no pai não haveria handle confiável para
         # chegar até este processo.
-        if not instance.claim():
+        #
+        # O log vem antes da tomada: quando o processo nasceu de um
+        # "Atualizar", a espera pelo pet antigo é registrada no pet.log
+        # em vez de se perder (o ``run_app`` reconfigurar é inócuo, pelo
+        # guarda de ``configure_logging``).
+        configure_logging()
+        if not _claim_restartable(instance):
             return _already_running(instance)
 
         return run_app(options, instance, ready_file())
